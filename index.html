@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Linear Regression Lab</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M2 13L14 3' stroke='%234f5bd5' stroke-width='2'/><circle cx='4' cy='9' r='1.5' fill='%231f9d6b'/><circle cx='11' cy='8' r='1.5' fill='%231f9d6b'/></svg>" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="top-row">
+        <h1 class="brand">Linear Regression Lab</h1>
+        <label class="btn primary">
+          Import CSV
+          <input id="file-input" type="file" accept=".csv,text/csv" hidden />
+        </label>
+        <select id="sample-select" aria-label="Load a test dataset">
+          <option value="">Load test dataset…</option>
+          <option value="sample-housing.csv">Housing (synthetic sample)</option>
+        </select>
+        <span id="file-info" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="clear-btn" class="btn ghost" type="button">Clear saved data</button>
+      </div>
+
+      <div id="fields" class="fields"></div>
+
+      <div class="top-row train-row">
+        <label class="ctl">Steps <input id="steps" type="number" min="1" max="100000" step="1" /></label>
+        <label class="ctl">Learning rate <input id="lr" type="number" min="0.0001" max="10" step="any" /></label>
+        <label class="ctl">
+          Optimizer
+          <select id="optimizer">
+            <option value="adam">Adam</option>
+            <option value="sgd">SGD</option>
+          </select>
+        </label>
+        <button id="train-btn" class="btn primary" type="button">Train</button>
+        <progress id="progress" max="1" value="0" hidden></progress>
+        <span id="status" class="status" role="status"></span>
+      </div>
+    </header>
+
+    <aside class="left" id="left">
+      <h2>Outcome</h2>
+      <div id="report"></div>
+      <section id="predict-section" hidden>
+        <h3>Predict a new record</h3>
+        <form id="predict-form" class="predict-form"></form>
+        <div id="prediction"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <canvas id="graph" aria-label="Weight graph: each input field points to the outcome"></canvas>
+      <div id="tooltip" class="tooltip" hidden></div>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
