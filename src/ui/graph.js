@@ -8,9 +8,13 @@ function palette() {
   const v = (n) => s.getPropertyValue(n).trim();
   return {
     fg: v('--fg'), muted: v('--muted'), panel: v('--panel'), border: v('--border'),
-    pos: v('--pos'), neg: v('--neg'), enum: v('--enum'), accent: v('--accent'),
+    pos: v('--pos'), neg: v('--neg'), enum: v('--enum'), accent: v('--accent'), loc: v('--loc'),
   };
 }
+
+// The location adjustment is drawn as one more node, after the inputs.
+const LOC_KEY = '\0location';
+const keyOf = (t) => (t.kind === 'location' ? LOC_KEY : t.name);
 
 function bezier(p0, p1, p2, p3, t) {
   const u = 1 - t;
@@ -60,10 +64,10 @@ export function createGraph(canvas, tooltip) {
       return;
     }
 
-    const terms = model.terms;
-    const imps = terms.map(termImportance);
+    const terms = model.location ? [...model.terms, { ...model.location, name: 'location', kind: 'location' }] : model.terms;
+    const imps = terms.map((t) => (t.kind === 'location' ? t.spread : termImportance(t)));
     const maxImp = Math.max(...imps, 1e-12);
-    const contribByName = Object.fromEntries((prediction?.contributions || []).map((x) => [x.name, x]));
+    const contribByName = Object.fromEntries((prediction?.contributions || []).map((x) => [x.location ? LOC_KEY : x.name, x]));
 
     const n = terms.length;
     const pad = 48;
@@ -79,7 +83,7 @@ export function createGraph(canvas, tooltip) {
     const nodes = terms.map((t, i) => {
       const y = n === 1 ? oy : top + i * gap;
       const sign = termSign(t);
-      const color = sign > 0 ? c.pos : sign < 0 ? c.neg : c.enum;
+      const color = t.kind === 'location' ? c.loc : sign > 0 ? c.pos : sign < 0 ? c.neg : c.enum;
       return { t, x: ix, y, color, imp: imps[i] };
     });
 
@@ -105,13 +109,14 @@ export function createGraph(canvas, tooltip) {
 
       const t = 0.4;
       const lx = bezier(x0, mx, mx, x3, t), ly = bezier(nd.y, nd.y, oy, oy, t);
-      const pc = contribByName[nd.t.name];
+      const pc = contribByName[keyOf(nd.t)];
       let label;
       let labelColor = nd.color;
       if (pc) {
         label = signed(pc.contribution);
         labelColor = pc.contribution >= 0 ? c.pos : c.neg;
-      } else if (nd.t.kind === 'number') label = `w ${fmt(nd.t.weight)}`;
+      } else if (nd.t.kind === 'location') label = `±${fmt(nd.imp / 2)} · ${nd.t.neighbours} nearby`;
+      else if (nd.t.kind === 'number') label = `w ${fmt(nd.t.weight)}`;
       else label = `Δ ${fmt(nd.imp)} · ${nd.t.values.length} values`;
       pill(ctx, label, lx, ly, labelColor, c);
     }
@@ -126,8 +131,10 @@ export function createGraph(canvas, tooltip) {
       ctx.strokeStyle = c.panel;
       ctx.stroke();
 
-      const pc = contribByName[nd.t.name];
-      const sub = pc
+      const pc = contribByName[keyOf(nd.t)];
+      const sub = nd.t.kind === 'location'
+        ? pc ? `${prediction.location.neighbours.length} nearby records` : `${nd.t.points.length} records · ${fmt(nd.t.scaleKm)} km scale`
+        : pc
         ? `= ${typeof pc.input === 'number' ? fmt(pc.input) : pc.input}`
         : nd.t.kind === 'number'
           ? `${fmt(nd.t.min)} – ${fmt(nd.t.max)}`
@@ -172,6 +179,13 @@ export function createGraph(canvas, tooltip) {
   }
 
   function tooltipHtml({ term: t, imp }) {
+    if (t.kind === 'location') {
+      const m = t.metrics;
+      return `<strong>location</strong> <span class="muted">${esc(t.lat)} / ${esc(t.lng)}</span><br>
+        shifts each estimate by how much the formula<br>missed on its ${t.neighbours} nearest training records<br>
+        distance scale: ${fmt(t.scaleKm)} km · typical shift ±${fmt(imp / 2)}<br>
+        R² ${fmt(m.r2Before)} → ${fmt(m.r2After)} <span class="muted">(left-out check)</span>`;
+    }
     if (t.kind === 'number') {
       return `<strong>${esc(t.name)}</strong> <span class="muted">number</span><br>
         weight: <b>${fmt(t.weight)}</b> per unit<br>
@@ -200,8 +214,11 @@ export function createGraph(canvas, tooltip) {
     canvas.style.cursor = 'help';
     tooltip.innerHTML = tooltipHtml(hit);
     tooltip.hidden = false;
-    tooltip.style.left = `${Math.min(x + 16, rect.width - tooltip.offsetWidth - 8)}px`;
-    tooltip.style.top = `${Math.min(y + 16, rect.height - tooltip.offsetHeight - 8)}px`;
+    // The tooltip is positioned within <main>, which also holds the view tabs.
+    const host = tooltip.offsetParent.getBoundingClientRect();
+    const px = e.clientX - host.left, py = e.clientY - host.top;
+    tooltip.style.left = `${Math.min(px + 16, host.width - tooltip.offsetWidth - 8)}px`;
+    tooltip.style.top = `${Math.min(py + 16, host.height - tooltip.offsetHeight - 8)}px`;
   });
   canvas.addEventListener('mouseleave', () => (tooltip.hidden = true));
 

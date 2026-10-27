@@ -1,5 +1,11 @@
 // localStorage persistence (the client-side "database").
-const KEYS = { dataset: 'lrlab.dataset', config: 'lrlab.config', model: 'lrlab.model' };
+const KEYS = {
+  dataset: 'lrlab.dataset',
+  config: 'lrlab.config',
+  model: 'lrlab.model',
+  batch: 'lrlab.batch',
+  batchMapping: 'lrlab.batchMapping',
+};
 
 function read(key) {
   try {
@@ -22,16 +28,23 @@ function write(key, value) {
 }
 
 // Rows are stored as arrays (not objects) to avoid repeating column names.
-export function saveDataset({ fileName, columns, rows }) {
-  return write(KEYS.dataset, { fileName, columns, rows: rows.map((r) => columns.map((c) => r[c])), savedAt: Date.now() });
+function writeTable(key, { fileName, columns, rows }) {
+  return write(key, { fileName, columns, rows: rows.map((r) => columns.map((c) => r[c])), savedAt: Date.now() });
 }
 
-export function loadDataset() {
-  const d = read(KEYS.dataset);
+function readTable(key) {
+  const d = read(key);
   if (!d?.columns || !Array.isArray(d.rows)) return null;
   const rows = d.rows.map((arr) => Object.fromEntries(d.columns.map((c, i) => [c, arr[i] ?? ''])));
   return { fileName: d.fileName, columns: d.columns, rows };
 }
+
+export const saveDataset = (dataset) => writeTable(KEYS.dataset, dataset);
+export const loadDataset = () => readTable(KEYS.dataset);
+export const saveBatch = (dataset) => writeTable(KEYS.batch, dataset);
+export const loadBatch = () => readTable(KEYS.batch);
+export const saveBatchMapping = (mapping) => write(KEYS.batchMapping, mapping);
+export const loadBatchMapping = () => read(KEYS.batchMapping);
 
 export const saveConfig = (config) => write(KEYS.config, config);
 export const loadConfig = () => read(KEYS.config);

@@ -5,14 +5,31 @@
 // baseline (the most frequent value), so each non-baseline value gets a weight
 // meaning "outcome shift vs. baseline". The outcome is min-max scaled too.
 import { isMissing, toNumber } from './schema.js';
+import { locationEffect } from './location.js';
+
+// The group-by field splits the data instead of being an input.
+const inputColumns = (stats, config) =>
+  Object.keys(config.roles).filter((c) => stats[c] && config.roles[c] === 'input' && c !== config.groupBy);
 
 export function validateConfig(stats, config) {
   const cols = Object.keys(config.roles).filter((c) => stats[c]);
   const outcomes = cols.filter((c) => config.roles[c] === 'outcome');
-  const inputs = cols.filter((c) => config.roles[c] === 'input');
+  const inputs = inputColumns(stats, config);
   if (outcomes.length !== 1) return 'Mark exactly one field as the outcome (y).';
   if (stats[outcomes[0]].type !== 'number') return `Outcome "${outcomes[0]}" must be numeric.`;
+  if (config.groupBy) {
+    const g = stats[config.groupBy];
+    if (!g || g.type !== 'enum') return `Group-by field "${config.groupBy}" must be an enum.`;
+    if (config.groupBy === outcomes[0]) return 'The outcome cannot also be the group-by field.';
+  }
   if (!inputs.length) return 'Mark at least one field as an input (x).';
+  for (const [role, label] of [['lat', 'latitude'], ['lng', 'longitude']]) {
+    const marked = cols.filter((c) => config.roles[c] === role);
+    if (marked.length > 1) return `Mark only one field as the ${label}.`;
+    if (marked.length && stats[marked[0]].type !== 'number') return `${label[0].toUpperCase() + label.slice(1)} "${marked[0]}" must be numeric.`;
+  }
+  const hasLat = cols.some((c) => config.roles[c] === 'lat'), hasLng = cols.some((c) => config.roles[c] === 'lng');
+  if (hasLat !== hasLng) return `Mark a ${hasLat ? 'longitude' : 'latitude'} field too, or neither.`;
   for (const c of inputs) {
     const s = stats[c];
     if (s.type === 'enum' && s.values.length < 2) return `Input "${c}" has only one value; it cannot carry a weight.`;
@@ -25,8 +42,7 @@ export function buildSpec(stats, config) {
   if (err) throw new Error(err);
   const cols = Object.keys(config.roles).filter((c) => stats[c]);
   const o = stats[cols.find((c) => config.roles[c] === 'outcome')];
-  const inputs = cols
-    .filter((c) => config.roles[c] === 'input')
+  const inputs = inputColumns(stats, config)
     .map((c) => {
       const s = stats[c];
       if (s.type === 'number') {
@@ -110,11 +126,56 @@ function averageEffect(t) {
   return Object.entries(t.freq).reduce((sum, [v, p]) => sum + p * (t.weights[v] ?? 0), 0);
 }
 
+// A grouped model holds one formula per value of its group-by field.
+export const isGrouped = (model) => !!model?.groups;
+
+// The formula that applies to a record (null when its group has none).
+export function resolveModel(model, groupValue) {
+  if (!isGrouped(model)) return model;
+  return model.groups[String(groupValue ?? '').trim()] ?? null;
+}
+
+export function noGroupReason(model, groupValue) {
+  const v = String(groupValue ?? '').trim();
+  if (!v) return `${model.groupBy} is required to pick a formula.`;
+  const skipped = model.skipped.find((s) => s.value === v);
+  return skipped
+    ? `No formula for ${model.groupBy} = "${v}": ${skipped.reason}`
+    : `No formula for ${model.groupBy} = "${v}" (not in the training data).`;
+}
+
+// The latitude/longitude fields of a model (any group's), or null.
+export function modelLocation(model) {
+  if (!isGrouped(model)) return model.location ?? null;
+  return Object.values(model.groups).find((g) => g.location)?.location ?? null;
+}
+
+// Every field a model reads: the group-by field first, then the union of all
+// groups' inputs (a group may lack some inputs), then latitude and longitude.
+export function modelInputs(model) {
+  const loc = modelLocation(model);
+  const coords = loc ? [{ name: loc.lat, kind: 'number', location: true }, { name: loc.lng, kind: 'number', location: true }] : [];
+  if (!isGrouped(model)) return [...model.terms, ...coords];
+  const seen = new Map();
+  for (const g of Object.values(model.groups)) for (const t of g.terms) if (!seen.has(t.name)) seen.set(t.name, t);
+  const values = [...Object.keys(model.groups), ...model.skipped.map((s) => s.value)];
+  return [{ name: model.groupBy, kind: 'enum', values, baseline: values[0], group: true }, ...seen.values(), ...coords];
+}
+
 // record: { [fieldName]: string | number }
 // `reference` is the prediction for an average training record; each
 // contribution is how far this record's value moves the result from it, so
 // reference + Σ contribution = value.
-export function predict(model, record) {
+// With a location adjustment and a record that has coordinates, the last
+// contribution is the location's (flagged `location: true`).
+// opts.location = false gives the formula alone.
+export function predict(model, record, opts = {}) {
+  if (isGrouped(model)) {
+    const group = String(record[model.groupBy] ?? '').trim();
+    const sub = resolveModel(model, group);
+    if (!sub) throw new Error(noGroupReason(model, group));
+    return { ...predict(sub, record, opts), group };
+  }
   let value = model.intercept;
   let reference = model.intercept;
   const contributions = [];
@@ -142,7 +203,17 @@ export function predict(model, record) {
     reference += avg;
     contributions.push({ name: t.name, input, contribution: c - avg });
   }
-  return { value, reference, contributions, warnings };
+  let location = null;
+  if (model.location && opts.location !== false) {
+    location = locationEffect(model.location, record);
+    if (location) {
+      value += location.adjustment;
+      contributions.push({ name: 'location', input: `${location.lat}, ${location.lng}`, contribution: location.adjustment, location: true });
+    } else {
+      warnings.push(`No usable ${model.location.lat}/${model.location.lng}, so no location adjustment.`);
+    }
+  }
+  return { value, reference, contributions, warnings, location };
 }
 
 export function evaluate(model, rows) {
@@ -151,7 +222,9 @@ export function evaluate(model, rows) {
   const actual = rows.map((r) => toNumber(r[model.outcome.name]));
   const mean = actual.reduce((a, b) => a + b, 0) / n;
   rows.forEach((row, i) => {
-    const err = predict(model, row).value - actual[i];
+    // The formula alone: a training record's own residual would leak into
+    // its location adjustment. The location gets its own left-out check.
+    const err = predict(model, row, { location: false }).value - actual[i];
     se += err * err;
     ae += Math.abs(err);
     st += (actual[i] - mean) ** 2;

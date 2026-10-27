@@ -159,5 +159,60 @@
         }
       }
     }
+  },
+  {
+    "file": "location-train.csv",
+    "title": "Neighbourhood prices (lat/lng, training)",
+    "description": "800 houses. Price = formula of sqft and beds + a neighbourhood effect (two pricey spots, one cheap). latitude/longitude are picked up as the location automatically.",
+    "rows": 800,
+    "truth": {
+      "outcome": "price",
+      "intercept": 120000,
+      "weights": {
+        "sqft": 210,
+        "beds": 15000
+      },
+      "location": [
+        {
+          "lat": 30.29,
+          "lng": -97.75,
+          "km": 1.5,
+          "amount": 150000
+        },
+        {
+          "lat": 30.22,
+          "lng": -97.7,
+          "km": 2,
+          "amount": 90000
+        },
+        {
+          "lat": 30.25,
+          "lng": -97.8,
+          "km": 1.8,
+          "amount": -80000
+        }
+      ]
+    }
+  },
+  {
+    "file": "location-verify.csv",
+    "title": "Neighbourhood prices (lat/lng, verify)",
+    "description": "150 sold houses from the same area to check the location adjustment; 10 have no coordinates.",
+    "rows": 150,
+    "truth": null
+  },
+  {
+    "file": "test-austin-training-data.csv",
+    "title": "Austin for-sale listings (training)",
+    "description": "Real for-sale listings. Train with listPrice as the outcome.",
+    "rows": 500,
+    "truth": null
+  },
+  {
+    "file": "test-austin-verify-data.csv",
+    "title": "Austin sold listings (verify)",
+    "description": "Real sold listings. Use under \"Predict many records\" with closePrice as the actual value.",
+    "rows": 19,
+    "truth": null
   }
 ]

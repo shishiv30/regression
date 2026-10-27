@@ -1,26 +1,51 @@
 import './ui/styles.css';
-import { parseCsv, analyzeColumns, suggestRoles, validateConfig, trainModel, predict, storage } from './calc/index.js';
+import {
+  parseCsv,
+  analyzeColumns,
+  suggestRoles,
+  validateConfig,
+  trainModel,
+  predict,
+  isGrouped,
+  resolveModel,
+  suggestMapping,
+  predictBatch,
+  resultsToCsv,
+  modelLocation,
+  DEFAULT_NEIGHBOURS,
+  storage,
+} from './calc/index.js';
 import { renderFields } from './ui/fields.js';
 import { renderReport, renderPredictForm, renderPrediction } from './ui/report.js';
 import { createGraph } from './ui/graph.js';
+import { createGapChart } from './ui/gapChart.js';
+import { renderBatch } from './ui/batch.js';
+import { createDataTable } from './ui/dataTable.js';
+import { createGroupGraphs } from './ui/groupGraphs.js';
 import { esc } from './ui/format.js';
 
 const $ = (sel) => document.querySelector(sel);
-const DEFAULTS = { roles: {}, types: {}, steps: 500, learningRate: 0.05, optimizer: 'adam' };
+const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS };
 
 const state = {
   dataset: null,
   stats: {},
   config: { ...DEFAULTS },
   model: null,
+  selectedGroup: null, // which group's formula the report and graph show
   training: false,
   stopRequested: false,
+  batch: null, // second CSV whose rows are estimated in bulk
+  mapping: null, // { inputs: { term: column|null }, actual, label }
 };
 
 const graph = createGraph($('#graph'), $('#tooltip'));
+const gapChart = createGapChart($('#gap'), $('#view-gap'), $('#tooltip'));
+const dataTable = createDataTable($('#view-table'));
+const groupGraphs = createGroupGraphs($('#group-graphs'), $('#tooltip'), { onGroup: (g) => selectGroup(g) });
 
 // Fingerprint of the field setup, to tell when a stored model is out of date.
-const setupKey = (c) => JSON.stringify([c.roles, c.types]);
+const setupKey = (c) => JSON.stringify([c.roles, c.types, c.groupBy ?? null]);
 
 function setStatus(msg, kind = '') {
   const el = $('#status');
@@ -34,14 +59,50 @@ function persistConfig() {
 
 function loadDataset(dataset, { fresh }) {
   state.dataset = dataset;
-  if (fresh) state.config = { ...state.config, roles: {}, types: {} };
+  if (fresh) state.config = { ...state.config, roles: {}, types: {}, groupBy: null };
   state.stats = analyzeColumns(dataset.columns, dataset.rows, state.config.types);
   if (fresh) state.config.roles = suggestRoles(dataset.columns, state.stats);
   renderAll();
 }
 
-function renderAll() {
+// The single formula on display: for a grouped model, the selected group's.
+function shownModel() {
+  const { model } = state;
+  if (!isGrouped(model)) return model;
+  if (!model.groups[state.selectedGroup]) state.selectedGroup = Object.keys(model.groups)[0];
+  return resolveModel(model, state.selectedGroup);
+}
+
+function selectGroup(group) {
+  state.selectedGroup = group;
+  renderModelViews();
+}
+
+// Report, prediction form and weight graph for the shown formula.
+function renderModelViews() {
   const { dataset, config, model } = state;
+  renderReport($('#report'), model, {
+    stale: model && dataset && model.setupKey !== setupKey(config),
+    shown: shownModel(),
+    onGroup: selectGroup,
+  });
+  $('#predict-section').hidden = !model;
+  if (model) renderPredictForm($('#predict-form'), model, onPredict, { group: state.selectedGroup, onGroup: selectGroup });
+  renderPrediction($('#prediction'), model, null);
+  // A grouped model gets one weight graph per group instead of a single one.
+  const grouped = isGrouped(model);
+  $('#graph').hidden = grouped;
+  $('#group-graphs').hidden = !grouped;
+  groupGraphs.setModel(grouped ? model : null);
+  if (grouped) {
+    shownModel();
+    groupGraphs.select(state.selectedGroup);
+    groupGraphs.setPrediction(null);
+  } else graph.setModel(model);
+}
+
+function renderAll() {
+  const { dataset, config } = state;
   $('#file-info').innerHTML = dataset
     ? `<b>${esc(dataset.fileName)}</b> · ${dataset.rows.length} records · ${dataset.columns.length} fields`
     : '';
@@ -49,12 +110,87 @@ function renderAll() {
   $('#steps').value = config.steps;
   $('#lr').value = config.learningRate;
   $('#optimizer').value = config.optimizer;
+  $('#neighbours').value = config.neighbours;
+  $('#neighbours-ctl').hidden = !Object.values(config.roles).includes('lat');
   renderTrainButton();
-  renderReport($('#report'), model, { stale: model && dataset && model.setupKey !== setupKey(config) });
-  $('#predict-section').hidden = !model;
-  if (model) renderPredictForm($('#predict-form'), model, onPredict);
-  renderPrediction($('#prediction'), model, null);
-  graph.setModel(model);
+  renderModelViews();
+  renderBatchSection();
+}
+
+function setView(view) {
+  for (const b of document.querySelectorAll('.view-tabs [data-view]')) b.setAttribute('aria-selected', String(b.dataset.view === view));
+  $('#view-weights').hidden = view !== 'weights';
+  $('#view-gap').hidden = view !== 'gap';
+  $('#view-table').hidden = view !== 'table';
+  $('#tooltip').hidden = true;
+}
+
+// Keep the user's column choices across retraining; suggest for new inputs.
+function reconcileMapping() {
+  const { model, batch, mapping } = state;
+  const fresh = suggestMapping(model, batch.columns);
+  if (!mapping) return fresh;
+  const has = (c) => c === null || batch.columns.includes(c);
+  const inputs = {};
+  for (const name of Object.keys(fresh.inputs)) inputs[name] = name in mapping.inputs && has(mapping.inputs[name]) ? mapping.inputs[name] : fresh.inputs[name];
+  return {
+    inputs,
+    actual: mapping.actual !== undefined && has(mapping.actual) ? mapping.actual : fresh.actual,
+    label: mapping.label !== undefined && has(mapping.label) ? mapping.label : fresh.label,
+  };
+}
+
+function renderBatchSection() {
+  const { model, batch } = state;
+  if (!model || !batch) {
+    renderBatch($('#batch'), {});
+    gapChart.setData(null);
+    dataTable.setData(null);
+    return;
+  }
+  state.mapping = reconcileMapping();
+  const output = predictBatch(model, batch.rows, state.mapping);
+  renderBatch($('#batch'), { batch, model, mapping: state.mapping, output }, {
+    onMapping(kind, term, column) {
+      if (kind === 'input') state.mapping.inputs[term] = column;
+      else state.mapping[kind] = column;
+      storage.saveBatchMapping(state.mapping);
+      renderBatchSection();
+    },
+    onDownload() {
+      const csv = resultsToCsv(batch.columns, batch.rows, output.results, model.outcome.name);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = batch.fileName.replace(/\.csv$/i, '').replace(/[^\w.-]+/g, '_') + '-estimates.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    },
+  });
+  gapChart.setData({ results: output.results, outcomeName: model.outcome.name, actualColumn: state.mapping.actual });
+  const loc = modelLocation(model);
+  dataTable.setData({
+    batch,
+    results: output.results,
+    mapping: state.mapping,
+    outcomeName: model.outcome.name,
+    groupBy: model.groupBy ?? null,
+    locationFields: loc ? [loc.lat, loc.lng] : [],
+  });
+}
+
+function importBatchText(text, fileName) {
+  try {
+    const { columns, rows } = parseCsv(text);
+    state.batch = { fileName, columns, rows };
+    state.mapping = null;
+    const saved = storage.saveBatch(state.batch);
+    renderBatchSection();
+    storage.saveBatchMapping(state.mapping);
+    setView('gap');
+    if (!saved) setStatus('Batch file is too large for localStorage; it will not survive a reload.', 'error');
+  } catch (e) {
+    setStatus(`Could not read CSV: ${e.message}`, 'error');
+  }
 }
 
 function renderTrainButton() {
@@ -74,14 +210,18 @@ function renderTrainButton() {
 function onFieldChange(col, key, value) {
   const { config } = state;
   if (key === 'role') {
-    // Only one outcome: demote the previous one.
-    if (value === 'outcome') {
-      for (const c of Object.keys(config.roles)) if (config.roles[c] === 'outcome') config.roles[c] = 'ignore';
+    // Only one outcome, latitude and longitude: demote the previous one.
+    if (value === 'outcome' || value === 'lat' || value === 'lng') {
+      for (const c of Object.keys(config.roles)) if (config.roles[c] === value) config.roles[c] = 'ignore';
     }
     config.roles[col] = value;
+    if (value === 'outcome' && config.groupBy === col) config.groupBy = null;
+  } else if (key === 'groupBy') {
+    config.groupBy = value ? col : null;
   } else {
     config.types[col] = value;
     state.stats = analyzeColumns(state.dataset.columns, state.dataset.rows, config.types);
+    if (config.groupBy === col && value !== 'enum') config.groupBy = null;
   }
   persistConfig();
   renderAll();
@@ -96,6 +236,7 @@ async function onTrain() {
   config.steps = Math.max(1, Math.min(100000, Math.round(Number($('#steps').value) || DEFAULTS.steps)));
   config.learningRate = Number($('#lr').value) > 0 ? Number($('#lr').value) : DEFAULTS.learningRate;
   config.optimizer = $('#optimizer').value;
+  config.neighbours = Math.max(1, Math.min(100, Math.round(Number($('#neighbours').value) || DEFAULTS.neighbours)));
   persistConfig();
 
   state.training = true;
@@ -107,9 +248,11 @@ async function onTrain() {
   setStatus('Training…');
   try {
     const model = await trainModel(state.dataset.rows, state.stats, config, {
-      onProgress: ({ step, steps, loss }) => {
-        progress.value = step / steps;
-        setStatus(`Step ${step} / ${steps} · normalised loss ${loss.toExponential(3)}`);
+      onProgress: ({ step, steps, loss, group, groupIndex, groupCount }) => {
+        const done = group === undefined ? step / steps : (groupIndex + step / steps) / groupCount;
+        progress.value = done;
+        const where = group === undefined ? '' : `${config.groupBy} = ${group} (${groupIndex + 1}/${groupCount}) · `;
+        setStatus(`${where}Step ${step} / ${steps} · normalised loss ${loss.toExponential(3)}`);
       },
       shouldStop: () => state.stopRequested,
     });
@@ -118,7 +261,8 @@ async function onTrain() {
     const saved = storage.saveModel(model);
     state.training = false;
     renderAll();
-    setStatus(`Done — R² ${model.metrics.r2.toFixed(4)}${saved ? '' : ' (model could not be saved to localStorage)'}`, 'ok');
+    const groups = isGrouped(model) ? ` · ${Object.keys(model.groups).length} formulas${model.skipped.length ? `, ${model.skipped.length} group(s) skipped` : ''}` : '';
+    setStatus(`Done — R² ${model.metrics.r2.toFixed(4)}${groups}${saved ? '' : ' (model could not be saved to localStorage)'}`, 'ok');
   } catch (e) {
     state.training = false;
     renderTrainButton();
@@ -131,12 +275,15 @@ async function onTrain() {
 function onPredict(record) {
   try {
     const result = predict(state.model, record);
-    renderPrediction($('#prediction'), state.model, result);
-    graph.setPrediction(result);
+    renderPrediction($('#prediction'), state.model, result, null, state.dataset);
+    if (isGrouped(state.model)) groupGraphs.setPrediction(result);
+    else graph.setPrediction(result);
+    setView('weights');
     $('#prediction').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch (e) {
     renderPrediction($('#prediction'), state.model, null, e.message);
     graph.setPrediction(null);
+    groupGraphs.setPrediction(null);
   }
 }
 
@@ -159,33 +306,51 @@ $('#file-input').addEventListener('change', async (e) => {
   e.target.value = '';
 });
 
-// Test data collection (public/test-data/, built by scripts/make-test-data.mjs).
-const sampleSelect = $('#sample-select');
+$('#batch-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (file) importBatchText(await file.text(), file.name);
+  e.target.value = '';
+});
+
+for (const b of document.querySelectorAll('.view-tabs [data-view]')) b.addEventListener('click', () => setView(b.dataset.view));
+
+// Test data collection (public/test-data/, built by scripts/make-test-data.mjs),
+// offered both as training data and as batch files.
 fetch(`${import.meta.env.BASE_URL}test-data/index.json`)
   .then((res) => (res.ok ? res.json() : []))
   .then((list) => {
-    for (const d of list) sampleSelect.add(new Option(`${d.title} · ${d.rows.toLocaleString()} rows`, `test-data/${d.file}`));
+    for (const d of list) {
+      const label = `${d.title} · ${d.rows.toLocaleString()} rows`;
+      $('#sample-select').add(new Option(label, `test-data/${d.file}`));
+      $('#batch-sample').add(new Option(label, `test-data/${d.file}`));
+    }
   })
   .catch(() => {});
 
-sampleSelect.addEventListener('change', async () => {
-  const path = sampleSelect.value;
-  if (!path) return;
-  setStatus('Loading…');
-  try {
-    const res = await fetch(`${import.meta.env.BASE_URL}${path}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    await importText(await res.text(), `${path.split('/').pop()} (synthetic)`);
-  } catch (e) {
-    setStatus(`Could not load ${path}: ${e.message}`, 'error');
-  }
-  sampleSelect.value = '';
-});
+function onSampleChange(select, load) {
+  select.addEventListener('change', async () => {
+    const path = select.value;
+    if (!path) return;
+    setStatus('Loading…');
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}${path}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await load(await res.text(), path.split('/').pop());
+      if ($('#status').textContent === 'Loading…') setStatus('');
+    } catch (e) {
+      setStatus(`Could not load ${path}: ${e.message}`, 'error');
+    }
+    select.value = '';
+  });
+}
+onSampleChange($('#sample-select'), importText);
+onSampleChange($('#batch-sample'), importBatchText);
 
 $('#clear-btn').addEventListener('click', () => {
   if (!confirm('Remove the saved dataset, field setup and model from this browser?')) return;
   storage.clearAll();
-  Object.assign(state, { dataset: null, stats: {}, config: { ...DEFAULTS, roles: {}, types: {} }, model: null });
+  Object.assign(state, { dataset: null, stats: {}, config: { ...DEFAULTS, roles: {}, types: {} }, model: null, batch: null, mapping: null });
+  setView('weights');
   renderAll();
 });
 
@@ -195,6 +360,8 @@ $('#train-btn').addEventListener('click', onTrain);
 const savedConfig = storage.loadConfig();
 if (savedConfig) state.config = { ...DEFAULTS, ...savedConfig };
 state.model = storage.loadModel();
+state.batch = storage.loadBatch();
+state.mapping = storage.loadBatchMapping();
 const savedDataset = storage.loadDataset();
 if (savedDataset) loadDataset(savedDataset, { fresh: false });
 else renderAll();

@@ -2,7 +2,7 @@
 // Every dataset comes from a known formula (plus noise), recorded in index.json
 // as `truth`, so trained weights can be checked against it.
 //   node scripts/make-test-data.mjs
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const OUT = new URL('../public/test-data/', import.meta.url);
 mkdirSync(OUT, { recursive: true });
@@ -155,6 +155,58 @@ function save(file, { title, description, columns, rows, truth, eol = '\n' }) {
     rows,
     truth: { outcome: 'power_load_kw', weights: { temperature_c: 1.8, humidity_pct: -0.25, wind_kmh: 0.6, pressure_hpa: 0.05, hour: 0.4 }, enums: { site: siteAdj } },
   });
+}
+
+// 7. Location: house prices with a neighbourhood effect a linear formula of
+//    lat/lng cannot express (two pricey spots and a cheap one). A training
+//    file and a verify file with sold prices; some verify rows lack coordinates.
+{
+  const spots = [
+    { lat: 30.29, lng: -97.75, km: 1.5, amount: 150000 },
+    { lat: 30.22, lng: -97.70, km: 2, amount: 90000 },
+    { lat: 30.25, lng: -97.80, km: 1.8, amount: -80000 },
+  ];
+  const kmTo = (s, lat, lng) => Math.hypot((lat - s.lat) * 110.57, (lng - s.lng) * 111.32 * Math.cos((lat * Math.PI) / 180));
+  const locEffect = (lat, lng) => spots.reduce((a, s) => a + s.amount * Math.exp(-0.5 * (kmTo(s, lat, lng) / s.km) ** 2), 0);
+  const house = () => {
+    const sqft = Math.round(uniform(700, 3500)), beds = Math.floor(uniform(1, 6));
+    const lat = round(uniform(30.18, 30.34), 6), lng = round(uniform(-97.84, -97.66), 6);
+    const price = 120000 + 210 * sqft + 15000 * beds + locEffect(lat, lng) + gauss() * 15000;
+    return { sqft, beds, lat, lng, price: Math.round(price) };
+  };
+  const truth = { outcome: 'price', intercept: 120000, weights: { sqft: 210, beds: 15000 }, location: spots };
+  save('location-train.csv', {
+    title: 'Neighbourhood prices (lat/lng, training)',
+    description: '800 houses. Price = formula of sqft and beds + a neighbourhood effect (two pricey spots, one cheap). latitude/longitude are picked up as the location automatically.',
+    columns: ['sqft', 'beds', 'latitude', 'longitude', 'price'],
+    rows: Array.from({ length: 800 }, () => house()).map((h) => [h.sqft, h.beds, h.lat, h.lng, h.price]),
+    truth,
+  });
+  save('location-verify.csv', {
+    title: 'Neighbourhood prices (lat/lng, verify)',
+    description: '150 sold houses from the same area to check the location adjustment; 10 have no coordinates.',
+    columns: ['mlsNumber', 'sqft', 'beds', 'latitude', 'longitude', 'closePrice'],
+    rows: Array.from({ length: 150 }, (_, i) => {
+      const h = house();
+      const noCoords = i % 15 === 0;
+      return [`LOC-${1000 + i}`, h.sqft, h.beds, noCoords ? '' : h.lat, noCoords ? '' : h.lng, h.price];
+    }),
+    truth: null, // a verify file: its outcome column is closePrice
+  });
+}
+
+// 8. Real Austin listings (checked in under test/): train on the for-sale
+//    file, then batch-predict the sold file and compare with closePrice.
+//    No known formula, so no `truth`.
+for (const [src, title, description] of [
+  ['test-austin-training-data.csv', 'Austin for-sale listings (training)', 'Real for-sale listings. Train with listPrice as the outcome.'],
+  ['test-austin-verify-data.csv', 'Austin sold listings (verify)', 'Real sold listings. Use under "Predict many records" with closePrice as the actual value.'],
+]) {
+  const text = readFileSync(new URL(`../test/${src}`, import.meta.url), 'utf8');
+  writeFileSync(new URL(src, OUT), text);
+  const rows = text.split(/\r?\n/).filter((l) => l.trim()).length - 1;
+  index.push({ file: src, title, description, rows, truth: null });
+  console.log(`${src.padEnd(26)} ${String(rows).padStart(7)} rows  (copied)`);
 }
 
 writeFileSync(new URL('index.json', OUT), JSON.stringify(index, null, 2) + '\n');

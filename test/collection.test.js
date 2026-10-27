@@ -7,7 +7,8 @@ import { parseCsv, analyzeColumns, suggestRoles, trainModel, predict } from '../
 import { buildSpec, encodeDataset, buildModel } from '../src/calc/model.js';
 
 const dir = new URL('../public/test-data/', import.meta.url);
-const index = JSON.parse(readFileSync(new URL('index.json', dir), 'utf8'));
+// Only synthetic datasets have a known generating formula.
+const index = JSON.parse(readFileSync(new URL('index.json', dir), 'utf8')).filter((d) => d.truth);
 
 // Errors are measured as effect across the field's range, relative to the
 // outcome's range. Noise and correlated inputs (e.g. car weight vs. cylinders)

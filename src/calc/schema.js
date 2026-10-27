@@ -46,16 +46,25 @@ export function analyzeColumns(columns, rows, types = {}) {
   return out;
 }
 
+const LAT_RE = /(^|[._\s-])(lat|latitude)$/i;
+const LNG_RE = /(^|[._\s-])(lng|lon|long|longitude)$/i;
+
 // Sensible starting roles: last numeric column is the outcome; other numeric
-// columns and low-cardinality enums are inputs; ids / free text are ignored.
+// columns and low-cardinality enums are inputs; ids / free text are ignored;
+// numeric columns named like lat/lng become the location.
 export function suggestRoles(columns, stats) {
   const roles = {};
   const numeric = columns.filter((c) => stats[c].type === 'number');
-  const outcome = numeric[numeric.length - 1];
+  const lat = numeric.find((c) => LAT_RE.test(c));
+  const lng = numeric.find((c) => LNG_RE.test(c));
+  const located = lat && lng;
+  const outcome = numeric.filter((c) => !located || (c !== lat && c !== lng)).pop();
   for (const c of columns) {
     const s = stats[c];
     const looksLikeId = /^id$|[_\s-]id$/i.test(c);
-    if (c === outcome) roles[c] = 'outcome';
+    if (located && c === lat) roles[c] = 'lat';
+    else if (located && c === lng) roles[c] = 'lng';
+    else if (c === outcome) roles[c] = 'outcome';
     else if (looksLikeId) roles[c] = 'ignore';
     else if (s.type === 'number') roles[c] = 'input';
     else roles[c] = s.values.length >= 2 && s.values.length <= 30 ? 'input' : 'ignore';

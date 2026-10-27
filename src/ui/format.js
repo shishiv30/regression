@@ -8,6 +8,22 @@ export function fmt(v) {
 
 export const signed = (v) => (v >= 0 ? '+' : '−') + fmt(Math.abs(v));
 
+// Alert after an estimate whose formula needed fields the record did not
+// provide (no matching column or a blank cell); the training average was used.
+// Missing coordinates mean no location adjustment instead.
+export function missingText(fields, location = []) {
+  const parts = [];
+  if (fields.length) parts.push(`Missing from this record: ${fields.join(', ')}. The training average was used, so the estimate is less reliable.`);
+  if (location.length) parts.push(`No usable ${location.join(', ')}, so no location adjustment.`);
+  return parts.join(' ');
+}
+
+export function missingAlert(fields, location = []) {
+  const text = missingText(fields, location);
+  if (!text) return '';
+  return ` <span class="alert-icon" role="img" aria-label="${esc(text)}" title="${esc(text)}">⚠</span>`;
+}
+
 export function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
