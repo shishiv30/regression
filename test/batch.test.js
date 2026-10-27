@@ -54,7 +54,7 @@ describe('batch prediction (synthetic)', () => {
 });
 
 describe('Austin: train on for-sale, verify on sold', () => {
-  it('estimates all 19 sold listings and compares the 3 with a closePrice', async () => {
+  it('estimates all 4 sold listings and compares each closePrice', async () => {
     const model = await train('./test-austin-training-data.csv');
     expect(model.outcome.name).toBe('listPrice');
 
@@ -65,9 +65,9 @@ describe('Austin: train on for-sale, verify on sold', () => {
     expect(mapping.inputs.listXdaysago).toBeNull(); // the sold file has soldXdaysago instead
 
     const { results, summary } = predictBatch(model, sold.rows, mapping);
-    expect(results).toHaveLength(19);
+    expect(results).toHaveLength(4);
     expect(results.every((r) => Number.isFinite(r.estimate))).toBe(true);
-    expect(summary.withActual).toBe(3);
+    expect(summary.withActual).toBe(4);
     // LAND rows have no beds/baths/sqft and get training averages.
     expect(results.find((r) => r.label === '20983408').imputed).toEqual(expect.arrayContaining(['bedrooms', 'sqftTotal']));
   }, 60000);
