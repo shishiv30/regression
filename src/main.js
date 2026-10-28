@@ -61,13 +61,17 @@ function setStatus(msg, kind = '') {
 
 function persistConfig() {
   storage.saveConfig(state.config);
+  if (state.dataset) storage.saveFieldSetup(state.dataset, state.config);
 }
 
+// A fresh import starts from the setup last used for this dataset, if any,
+// otherwise from guesses.
 function loadDataset(dataset, { fresh }) {
   state.dataset = dataset;
-  if (fresh) state.config = { ...state.config, roles: {}, types: {}, scales: {}, groupBy: null };
+  const remembered = fresh ? storage.loadFieldSetup(dataset) : null;
+  if (fresh) state.config = { ...state.config, roles: {}, types: {}, scales: {}, groupBy: null, ...remembered };
   state.stats = analyzeColumns(dataset.columns, dataset.rows, state.config.types);
-  if (fresh) state.config.roles = suggestRoles(dataset.columns, state.stats);
+  if (fresh && !remembered) state.config.roles = suggestRoles(dataset.columns, state.stats);
   renderAll();
 }
 

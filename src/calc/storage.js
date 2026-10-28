@@ -5,7 +5,9 @@ const KEYS = {
   model: 'lrlab.model',
   batch: 'lrlab.batch',
   batchMapping: 'lrlab.batchMapping',
+  fieldSetups: 'lrlab.fieldSetups',
 };
+const MAX_FIELD_SETUPS = 30;
 
 function read(key) {
   try {
@@ -50,6 +52,23 @@ export const saveConfig = (config) => write(KEYS.config, config);
 export const loadConfig = () => read(KEYS.config);
 export const saveModel = (model) => write(KEYS.model, model);
 export const loadModel = () => read(KEYS.model);
+
+// The field setup (what each column is) remembered per dataset, so loading
+// the same file again starts from the last choices. A dataset is its file
+// name plus its columns; the most recently used setups are kept.
+const datasetKey = ({ fileName, columns }) => JSON.stringify([fileName, columns]);
+
+export function saveFieldSetup(dataset, { roles, types, scales, groupBy }) {
+  const key = datasetKey(dataset);
+  const all = (read(KEYS.fieldSetups) ?? []).filter((e) => e.key !== key);
+  all.unshift({ key, setup: { roles, types, scales, groupBy: groupBy ?? null } });
+  return write(KEYS.fieldSetups, all.slice(0, MAX_FIELD_SETUPS));
+}
+
+export function loadFieldSetup(dataset) {
+  const key = datasetKey(dataset);
+  return (read(KEYS.fieldSetups) ?? []).find((e) => e.key === key)?.setup ?? null;
+}
 
 export function clearAll() {
   for (const k of Object.values(KEYS)) {
