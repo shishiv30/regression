@@ -49,11 +49,26 @@ export function renderFields(el, { dataset, stats, config }, onChange) {
                 Group by${grouped ? ` <span class="muted">· ${s.values.length} formulas</span>` : ''}</label>`
             : ''
         }
+        ${
+          !grouped && role === 'input' && s.type === 'number' && s.min > 0
+            ? `<label class="scale-pick" title="Log: each 10% more has the same effect at any size, so big values don't run away (e.g. sqft vs. price). Auto picks log when it fits the outcome better and the values span at least 2×.">
+                Scale <select data-k="scale" aria-label="Scale of ${esc(col)}">
+                  <option value="auto">Auto</option>
+                  <option value="linear">Linear</option>
+                  <option value="log">Log</option>
+                </select></label>`
+            : ''
+        }
         <div class="field-summary">${summary(s)}</div>
         ${error}`;
       const sel = card.querySelector('[data-k=kind]');
       sel.value = kindOf(role, s.type);
       sel.addEventListener('change', () => onChange(col, 'kind', sel.value));
+      const scale = card.querySelector('[data-k=scale]');
+      if (scale) {
+        scale.value = config.scales?.[col] ?? 'auto';
+        scale.addEventListener('change', () => onChange(col, 'scale', scale.value));
+      }
       card.querySelector('[data-k=groupBy]')?.addEventListener('change', (e) => onChange(col, 'groupBy', e.target.checked));
       return card;
     }),

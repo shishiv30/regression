@@ -75,7 +75,10 @@ const round = (v, digits) => Math.round(v * 10 ** digits) / 10 ** digits;
 // similar in size. Distance in km plus SIZE_KM per unit of |log size ratio|,
 // so a record half the size counts like one ~0.35 km further away.
 const SIZE_KM = 0.5;
-function comparables(points, lat, lng, size, k, skip = -1) {
+// power: how the value grows with size, value ∝ size^power (1 = a fixed
+// value per size unit). Each neighbour's value is scaled to this record's
+// size by (size / its size)^power before taking the median.
+function comparables(points, lat, lng, size, k, skip = -1, power = 1) {
   const best = [];
   const ls = Math.log(size);
   for (let i = 0; i < points.length; i++) {
@@ -92,10 +95,27 @@ function comparables(points, lat, lng, size, k, skip = -1) {
     best[j] = { i, d, s };
   }
   if (!best.length) return null;
-  // Value per size unit (as a log), its median and how much it varies.
-  const per = best.map(({ i }) => Math.log(points[i][3] / points[i][5]));
+  // Value per size^power (as a log), its median and how much it varies.
+  const per = best.map(({ i }) => Math.log(points[i][3]) - power * Math.log(points[i][5]));
   const mid = median(per);
-  return { value: Math.exp(mid) * size, spread: median(per.map((v) => Math.abs(v - mid))), near: best };
+  return { value: Math.exp(mid + power * ls), spread: median(per.map((v) => Math.abs(v - mid))), near: best };
+}
+
+// The log-log slope of value on size over the training records, kept within
+// [0, 1.5]: about 0.8 for house prices by sqft (bigger homes cost less per
+// sqft), near 0 for land, where a big rural parcel is not worth many city
+// lots. Taken as 1 when fewer than MIN_POINTS records have both.
+function sizePower(points) {
+  const ok = points.filter((p) => p[5] > 0 && p[3] > 0);
+  if (ok.length < MIN_POINTS) return 1;
+  const xs = ok.map((p) => Math.log(p[5])), ys = ok.map((p) => Math.log(p[3]));
+  const mx = xs.reduce((a, v) => a + v, 0) / xs.length, my = ys.reduce((a, v) => a + v, 0) / ys.length;
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sxy += (xs[i] - mx) * (ys[i] - my);
+    sxx += (xs[i] - mx) ** 2;
+  }
+  return sxx > 0 ? Math.min(1.5, Math.max(0, sxy / sxx)) : 1;
 }
 
 // rows: the records the formula was trained on; estimate(row) is the
@@ -142,7 +162,8 @@ export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbour
   const formula = sample.map((i) => unseen(source[i]));
   const before = formula.map((f) => toValue(outcome, f));
   const after = formula.map((f, s) => toValue(outcome, f + best.adj[s]));
-  const comps = size ? sample.map((i) => comparables(points, points[i][0], points[i][1], points[i][5], k, i)) : null;
+  const power = size ? sizePower(points) : 1;
+  const comps = size ? sample.map((i) => comparables(points, points[i][0], points[i][1], points[i][5], k, i, power)) : null;
   const usable = (s) => comps?.[s] && points[sample[s]][5] > 0;
   const final = after.map((v, s) => (usable(s) ? blendEstimates(v, comps[s].value) : v));
   const mean = actual.reduce((a, b) => a + b, 0) / sample.length;
@@ -164,7 +185,7 @@ export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbour
     if (!c || !Number.isFinite(a)) continue;
     const at = toValue(outcome, estimate(row) + blend(points, nearest(points, c.lat, c.lng, k), best.scaleKm));
     const sz = size ? toNumber(row[size]) : NaN;
-    const cp = sz > 0 ? comparables(points, c.lat, c.lng, sz, k) : null;
+    const cp = sz > 0 ? comparables(points, c.lat, c.lng, sz, k, -1, power) : null;
     pairs.push([a, cp ? blendEstimates(at, cp.value) : at]);
     signals.push(cp ? { disagree: disagreement(at, cp.value), spread: cp.spread } : null);
   }
@@ -199,6 +220,7 @@ export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbour
       // How far the adjustment typically moves an estimate in model space (10th to 90th percentile).
       spread: q(0.9) - q(0.1),
       size,
+      ...(size && { sizePower: power }),
       range,
       confidence,
       metrics: locationMetrics({ n: sample.length, mean, sst, sseBefore: sse(before), sseAfter: sse(after), ...(comps ? { sseComps: sse(final) } : {}) }),
@@ -310,7 +332,7 @@ export function comparablesEffect(location, record) {
   const c = readCoords(record, location.lat, location.lng);
   const size = toNumber(record[location.size]);
   if (!c || !(size > 0)) return null;
-  const comps = comparables(location.points, c.lat, c.lng, size, location.neighbours);
+  const comps = comparables(location.points, c.lat, c.lng, size, location.neighbours, -1, location.sizePower ?? 1);
   if (!comps) return null;
   const { points } = location;
   return {

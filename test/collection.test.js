@@ -59,7 +59,8 @@ describe.each(index)('$file', ({ file, truth }) => {
     const stats = analyzeColumns(columns, rows);
     const roles = suggestRoles(columns, stats);
     expect(roles[truth.outcome]).toBe('outcome');
-    const config = { roles, steps: 1500, learningRate: 0.05, optimizer: 'adam' };
+    // No ridge: this checks gradient descent against plain least squares.
+    const config = { roles, steps: 1500, learningRate: 0.05, optimizer: 'adam', ridge: 0 };
 
     const model = await trainModel(rows, stats, config);
     const yRange = model.outcome.max - model.outcome.min;

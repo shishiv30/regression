@@ -82,7 +82,8 @@ Tick **Group by** on an enum field card (e.g. `listingType.name`) to train a sep
 
 - Each group gets its own ranges, averages and enum dictionaries. The group-by field itself is not an input.
 - Inputs with nothing to learn in a group are left out of that group's formula: blank in more than half of the group's records (e.g. bedrooms for LAND), empty, or the same value everywhere. The group's card lists them with the reason, e.g. "bedrooms (92% blank in this group)".
-- Groups with fewer than 10 complete records are skipped and listed with the reason.
+- **Min records / group** (default 30, shown when grouping) is the least a group needs to get a formula. A group also needs at least 2 complete records per weight; each enum value past the baseline is one weight. With fewer, a formula memorises its records and estimates new ones about as well as a guess.
+- A rejected group is listed with the reason. Its records get **no formula** instead of an unreliable estimate, and they are left out of the batch gap figures.
 - ⚠ marks a formula with fewer than 2 records per weight. It can memorise its training records, so its R² looks better than it really is. Enum inputs with many values (like `zipCode`) add one weight per value.
 - The **Weights** tab shows one weight graph per group, each drawn from that group's own formula (`groupGraphs.js`). Click a graph's header, a row in the left panel's group table, or **Showing formula for** to select a group; the left panel and the predict form follow the selected group.
 - A single prediction uses only the formula of the chosen group, and its breakdown is drawn on that group's graph.
@@ -106,14 +107,35 @@ On an earlier set of 500 Austin for-sale listings (no longer in the repo; 5-fold
 
 ## Log scale
 
-**Scale** in the training bar (default **Auto**) picks what the formula estimates:
+**Outcome scale** in the training bar (default **Auto**) picks what the formula estimates:
 - **Log** estimates log(outcome), so each weight is a percentage change: "+6% per bathroom" instead of "+$40k per bathroom". Prices grow by percentages (a bathroom adds more to a $2M house than to a $300k one), so this fits them better, and the outlier screen compares percentage errors, so pricey homes are no longer flagged for having large dollar errors.
 - **Auto** uses log for an outcome that is always above 0 and spans at least 10×; **Linear** keeps the outcome as it is.
 - On a log scale the weights table and graph show effects as percentages, the equation reads `log(outcome) = …`, and the prediction breakdown still adds up in outcome units: each part is taken in order, with its own percentage alongside.
 
+### Input scale (log-log)
+
+A plain number input on a log outcome means "+x% per unit", the same percentage for every extra unit. That compounds: on the San Jose single-family homes, +0.038% per sqft priced 2,000 sqft at $1.8M, 6,000 sqft at $8.2M and 8,000 sqft at $17.5M. Real prices rise more slowly than that. Per sqft they fall a little as homes get bigger (median about $1,070 below 1,170 sqft, $900 at 2,150–2,560 sqft).
+
+The standard fix in hedonic price models is to put the size on a log scale too, a log-log model: the formula reads `w·log(sqft)`, so `w` is an elasticity, the % change in price for 1% more sqft. The same 10% more sqft then adds the same % at any size.
+
+Each number input's card has a **Scale** pick, shown when every value is above 0:
+- **Auto** (default) uses log only when the outcome is on a log scale, the input spans at least 2×, and log(input) tracks log(outcome) more closely than the input itself. A plain outcome with a plain input is a straight line, not a runaway, so auto leaves those alone. Inputs spanning under 2× are left too (log is nearly a straight line there, e.g. zip codes).
+- **Linear** or **Log** force it. A group whose values include 0 or less stays linear.
+- A log-scale input shows as `log` in the weights table and as `w·log(field)` in the equation. Its effect reads as "+7.1% per +10%".
+- A prediction needs it above 0. In batch prediction a 0 or negative value gets the training fallback, like a blank.
+
+San Jose single-family homes, trained on the sold file and checked on the 827 for-sale homes:
+
+| sqftTotal scale | Effect | 6,000 sqft est. | Median gap | Median gap, ≥ 3,000 sqft (70) | Mean gap, ≥ 3,000 sqft |
+|---|---|---|---|---|---|
+| Linear | +0.038% per sqft | $8.2M | 9.2% | 12.4% | −$1.07M |
+| Log (auto) | +7.1% per +10% (elasticity 0.72) | $4.1M | 9.4% | 9.5% | −$0.30M |
+
+Typical homes barely change. The big ones are no longer priced as if each extra sqft compounded.
+
 ## Comparables, confidence and likely range
 
-With a location, **Comparables by** (default **Auto**) adds a second estimate: the median value per size unit (e.g. price per sqft) of the nearest training records of similar size, times the record's size. Auto picks the number input whose log tracks the outcome best (e.g. sqft for houses and condos, lot size for land).
+With a location, **Comparables by** (default **Auto**) adds a second estimate from the nearest training records of similar size. Each one's value is scaled to the record's size by (size ÷ its size)^p, and the median is taken. p is how value grows with size, the log-log slope over the formula's training records (kept within 0 – 1.5). It is about 0.8 for San Jose houses, which cost a little less per sqft as they get bigger, and near 0 for land, where a 60-acre rural parcel is not worth hundreds of city lots. With p = 1 this is plain price per sqft × size. Before p, land comparables priced parcels at up to 78× their list price. Auto picks the number input whose log tracks the outcome best (e.g. sqft for houses and condos, lot size for land).
 - The estimate blends formula + location and comparables 50/50 (geometric mean). The breakdown shows the blend as a **comparables** row, and a single prediction lists the comparables with their distance, size, value and value per size.
 - **Confidence** (High / Medium / Low) comes from two signals known before the real value: how far the formula and the comparables disagree, and how much the comparables' value per size varies. Training records are split into thirds by the combined score.
 - **Likely range**: every estimate gets the range that held 8 in 10 actual values. It comes from training records the estimate had not seen: each record's formula estimate is fitted without it (5-fold, exact least squares), its location and comparables leave it out, and outliers are included. With comparables, each confidence level has its own range. Without a location, the range comes from the formula's held-out errors.
@@ -162,6 +184,74 @@ Try it with **Neighbourhood prices (lat/lng, training)**, then **Neighbourhood p
 
 Gap = actual − estimate; gap % = gap ÷ actual. Rows with no actual value get an estimate but no gap.
 
+**Screened rows (⚑).** With the outlier screen on, a row is left out of the gap figures, though it still gets an estimate, when:
+- its actual value per size unit (the comparables' size field, else the actual value alone) is more than the outlier cutoff (3.5σ, robust) from the training records of its group, or
+- a number input is beyond the training range by more than 25% of that range.
+
+Neither check looks at the estimate, so a row is never set aside just for a big gap. Hover ⚑ for the reason. The results CSV puts it in the `note` column. On San Jose this sets aside 20 of 1,647 rows, for example:
+- a "single-family house" with 12,420 sqft, 30 beds and 24 baths at $999,999;
+- a 2,400 sqft condo at $12M;
+- a 780 sqft house on 45 acres at $4M;
+- remote parcels at under $0.07 per sqft.
+
+## What drives the big gaps
+
+After a batch with actual values, **Find what drives the big gaps** diagnoses the shown formula (the selected group's, for a grouped model). It uses only the compared rows that passed the screen, and needs at least 20. For each input, and for the location (lat/lng as one field):
+
+- **Without it**: every row is re-estimated with the field set to its training fallback (the mean or most common value; for the location, no location adjustment or comparables). This is a drop-feature check.
+- **Verdict**: a paired Wilcoxon signed-rank test compares each row's |gap| with and without the field, at 95%.
+  - **hurts**: better without it, by at least 0.1pp on the median |gap| and no worse on the mean.
+  - **helps**: worse without it.
+  - **unclear**: neither.
+- **Main driver**: among the biggest gaps (the worst 10% by |gap %|, at least 5 rows) against the other rows, the share where this field moved the estimate furthest in the direction of its error.
+- **Unusual value**: the same shares for a blank value (fallback used), a value outside the training range, or an enum value unseen or seen fewer than 5 times in training.
+
+The hints turn this into actions:
+- a field that hurts gets an **Ignore** button;
+- a field that drives, or is unusual in, at least 20% of the biggest gaps and at least 2× as often as in the other rows gets a note to check its values or Scale, or to add training records like those;
+- when nothing stands out, the hint says the gaps likely come from things the data doesn't record.
+
+**Before the last retrain** then shows the previous model's figures for the same rows, so the change can be confirmed. That matters because the check sets a field to its fallback rather than retraining without it. On San Jose single-family homes it flags `photoCount` and `parkingGarageSpace`:
+
+| Retrained without | Median gap | Within ±10% | Mean gap |
+|---|---|---|---|
+| (nothing) | 8.6% | 55.3% | 12.0% |
+| `photoCount` | 8.6% | 56.5% | 11.9% |
+| `parkingGarageSpace` | 8.9% | 55.1% | 12.3% |
+
+Removing `photoCount` improves the results; removing `parkingGarageSpace` makes them worse, so that one should be kept. The diagnosis runs on the file being checked, so treat a hint as something to try, not a verdict.
+
+## Regularisation (ridge)
+
+**Regularisation** (default **Auto**) adds ridge·Σw² to the training loss. The strength is picked per formula by 5-fold cross-validation from 0 – 1 (on inputs scaled to [0, 1]): the one whose fits miss left-out records least. With plenty of records per weight it stays at or near 0. It grows for a small group or an enum with many values, where the formula would otherwise memorise its records. The likely ranges use the same ridge. The strength is shown under a formula's metrics when it isn't 0. **Off** gives plain least squares.
+
+## San Jose: sold → for-sale, round by round
+
+Setup: group by `listingType.name`; `soldXdaysago`, `onMarketDate` and `mlsNumber` ignored; address as label; `zipCode` as enum; `closePrice` as outcome. Verified on the for-sale file against `listPrice`. Each round fixed only the cause found in the previous one:
+
+| Round | Change | Rows | Median gap | ±10% | Mean gap |
+|---|---|---|---|---|---|
+| 0 | log-scale sqft (above) | 1,647 | 9.0% | 54.5% | 30.6% |
+| 1 | comparables scale by size^p | 1,647 | 8.7% | 55.7% | 16.1% |
+| 2 | batch screen (20 rows set aside) | 1,627 | 8.6% | 56.2% | 12.7% |
+| 3 | ridge by cross-validation | 1,627 | 8.6% | 56.1% | 12.6% |
+| 4 | 3,000 steps instead of 500 | 1,627 | 8.6% | 56.2% | 12.6% |
+| 5 | groups need 30 records and 2 per weight: LAND (20 records, 12 weights) gets no formula | 1,584 | 8.3% | 57.3% | 11.1% |
+
+Round 4 changed nothing, so training has converged. Per group after round 3 (round 5 removes LAND and leaves the rest unchanged):
+
+| Group | Rows | Median gap |
+|---|---|---|
+| CONDO | 560 | 7.3% |
+| SINGLE_FAMILY_HOUSE | 821 | 8.6% |
+| MULTI_FAMILY | 96 | 10.1% |
+| MOBILE | 107 | 11.7% |
+| LAND | 43 | 48.9% |
+
+LAND's limit is information, not the algorithm. Only 20 sold parcels are available, they have just lot size and zip, and land list prices run from $92k to $25M. A flat guess of the training median would be off by 53.7%. Since round 5 it gets no formula at all instead of a 49%-off estimate: its 46 rows show **no formula** with the reason.
+
+Part of the remaining gap is the metric. The formula learns sale prices but is checked against list prices, and homes here usually sell above asking: single-family estimates sit about 3.5% above list price. The comparison doesn't correct for this, since tuning on the verify file would only fit the test.
+
 ## Test data collection
 
 `npm run test-data` regenerates `public/test-data/`. Each dataset is built from a known formula plus noise, and the formula is recorded in `index.json` as `truth`. All of them can be loaded from the "Load test dataset…" menu and from the batch **Test file…** menu. The two San Jose files are real data kept in `public/test-data/` and only counted, so they have no `truth`. Train on the sold file (`closePrice`), then verify on the for-sale file (`listPrice`).
@@ -184,6 +274,9 @@ Tests:
 - `test/calc.test.js` covers CSV parsing, type detection and training on the housing sample.
 - `test/location.test.js` checks the location adjustment: role detection, the left-out gain, shifts near the pricey and cheap spots, fade-out far away, missing coordinates, batch and group-by.
 - `test/confidence.test.js` checks the log scale (breakdown adds up, weights as percentages), comparables, confidence levels and that held-out actual values mostly fall in their range.
+- `test/diagnose.test.js` checks the signed-rank test and that the diagnosis calls a field that tracked the outcome only in training **hurts** (with its out-of-range values as the unusual pattern) and the real input **helps**.
+- `test/screen.test.js` checks that comparables learn how value grows with size (p ≈ 0.3 for `price ∝ size^0.3`), that the batch screen sets aside a 100× typo and a far-out input but no normal rows, and that cross-validated ridge stays near 0 with plenty of records and grows when weights outnumber them.
+- `test/scale.test.js` checks log-scale inputs: when auto picks them, that a `price ∝ sqft^0.7` dataset gives back the 0.7 elasticity with the same ratio for small and big houses, and that a 0 is rejected in a prediction and filled in a batch.
 - `test/outliers.test.js` poisons a clean dataset with a few bad records and checks they are left out, the weights come back, and each group is screened on its own.
 - `test/missing.test.js` checks dropping vs. filling blank inputs, and leaving mostly-blank fields out of a group's formula.
 - `test/group.test.js` checks group-by training: one formula per group, dropped inputs, skipped groups, and routing in single and batch prediction.

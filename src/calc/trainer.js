@@ -1,5 +1,6 @@
 // Gradient-descent linear regression on TensorFlow.js (CPU backend, runs
-// entirely in the browser): minimise MSE of  X·w + b  against y.
+// entirely in the browser): minimise MSE of  X·w + b  against y, plus
+// ridge·‖w‖² (ridge regression; 0 = none).
 import * as tf from '@tensorflow/tfjs-core';
 import '@tensorflow/tfjs-core/dist/register_all_gradients.js';
 import '@tensorflow/tfjs-backend-cpu';
@@ -12,7 +13,7 @@ function ensureBackend() {
 
 const yieldToUi = () => new Promise((r) => setTimeout(r, 0));
 
-export async function trainLinear(X, y, { steps = 500, learningRate = 0.05, optimizer = 'adam', onProgress, shouldStop } = {}) {
+export async function trainLinear(X, y, { steps = 500, learningRate = 0.05, optimizer = 'adam', ridge = 0, onProgress, shouldStop } = {}) {
   await ensureBackend();
   const n = X.length;
   const d = X[0].length;
@@ -21,7 +22,8 @@ export async function trainLinear(X, y, { steps = 500, learningRate = 0.05, opti
   const w = tf.variable(tf.zeros([d, 1]));
   const b = tf.variable(tf.scalar(0));
   const opt = optimizer === 'sgd' ? tf.train.sgd(learningRate) : tf.train.adam(learningRate);
-  const loss = () => tf.mean(tf.square(tf.sub(tf.add(tf.matMul(xs, w), b), ys)));
+  const mse = () => tf.mean(tf.square(tf.sub(tf.add(tf.matMul(xs, w), b), ys)));
+  const loss = ridge > 0 ? () => tf.add(mse(), tf.mul(ridge, tf.sum(tf.square(w)))) : mse;
 
   const history = [];
   let stopped = false;

@@ -20,7 +20,8 @@ describe('log scale', () => {
   });
 
   it('estimates in outcome units and the breakdown still adds up', async () => {
-    const m = await trainModel(train.rows, stats, { ...base, logOutcome: true });
+    // sqft kept linear: this checks the per-unit meaning of a weight.
+    const m = await trainModel(train.rows, stats, { ...base, logOutcome: true, scales: { sqft: 'linear' } });
     expect(m.outcome.log).toBe(true);
     const p = predict(m, { sqft: 2000, beds: 3, latitude: 30.27, longitude: -97.74 });
     expect(p.value).toBeGreaterThan(100000);

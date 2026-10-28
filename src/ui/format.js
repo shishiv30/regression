@@ -12,6 +12,8 @@ export const signed = (v) => (v >= 0 ? '+' : '−') + fmt(Math.abs(v));
 // outcome, so it reads as a percentage; otherwise in outcome units.
 export const pctText = (r) => `${r >= 0 ? '+' : '−'}${fmt(Math.abs(r * 100))}%`;
 export const effect = (model, w) => (model.outcome.log ? pctText(Math.exp(w) - 1) : signed(w));
+// A log-scale number input as text: the change for 10 % more of it.
+export const perTenPct = (model, t) => `${effect(model, t.weight * Math.log(1.1))} per +10%`;
 // A ± spread in model space.
 export const spreadText = (model, s) => (model.outcome.log ? `±${fmt((Math.exp(s) - 1) * 100)}%` : `±${fmt(s)}`);
 
@@ -35,6 +37,13 @@ export function missingAlert(fields, location = []) {
   const text = missingText(fields, location);
   if (!text) return '';
   return ` <span class="alert-icon" role="img" aria-label="${esc(text)}" title="${esc(text)}">⚠</span>`;
+}
+
+// A row the batch screen left out of the gap figures, with the reasons.
+export function suspectAlert(reasons = []) {
+  if (!reasons.length) return '';
+  const text = `Left out of the gap figures: ${reasons.join('; ')}.`;
+  return ` <span class="suspect-icon" role="img" aria-label="${esc(text)}" title="${esc(text)}">⚑</span>`;
 }
 
 export function esc(s) {

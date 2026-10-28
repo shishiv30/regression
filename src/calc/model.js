@@ -57,7 +57,50 @@ export function useLogOutcome(stats, config) {
   return config.logOutcome === true;
 }
 
-export function buildSpec(stats, config) {
+// Log scale for a number input: the formula reads log(x), so doubling x has
+// the same effect at any size (diminishing returns per unit: the 1,000 sqft
+// between 1,000 and 2,000 add more than those between 5,000 and 6,000).
+// Needs every value above 0. config.scales[c] is 'log', 'linear' or unset
+// (auto). Auto only acts with the outcome on a log scale, where a plain input
+// would make the outcome grow exponentially with it (× the same % for every
+// extra unit). It then picks log for an input that spans at least 2× (below
+// that log(x) is nearly a straight line, e.g. zip codes) and whose log tracks
+// log(outcome) more closely than the input itself does.
+export function useLogInput(c, stats, config, rows = []) {
+  const s = stats[c];
+  if (s?.type !== 'number' || !(s.min > 0)) return false;
+  const pick = config.scales?.[c];
+  if (pick === 'log') return true;
+  if (pick === 'linear' || s.max < 2 * s.min || !rows.length || !useLogOutcome(stats, config)) return false;
+  const outcome = Object.keys(config.roles).find((k) => config.roles[k] === 'outcome');
+  const xs = [], ys = [];
+  for (const r of rows) {
+    const x = toNumber(r[c]), y = toNumber(r[outcome]);
+    if (x > 0 && y > 0) {
+      xs.push(x);
+      ys.push(Math.log(y));
+    }
+  }
+  return xs.length > 2 && correlation(xs.map(Math.log), ys) ** 2 > correlation(xs, ys) ** 2;
+}
+
+export function correlation(a, b) {
+  const n = a.length;
+  const ma = a.reduce((s, v) => s + v, 0) / n, mb = b.reduce((s, v) => s + v, 0) / n;
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < n; i++) {
+    sab += (a[i] - ma) * (b[i] - mb);
+    saa += (a[i] - ma) ** 2;
+    sbb += (b[i] - mb) ** 2;
+  }
+  return saa > 0 && sbb > 0 ? sab / Math.sqrt(saa * sbb) : 0;
+}
+
+// The value a number term reads: log(x) on a log scale.
+const termInput = (t, x) => (t.log ? Math.log(x) : x);
+
+// rows: the training records, for the auto choice of log-scale inputs.
+export function buildSpec(stats, config, rows = []) {
   const err = validateConfig(stats, config);
   if (err) throw new Error(err);
   const cols = Object.keys(config.roles).filter((c) => stats[c]);
@@ -67,7 +110,16 @@ export function buildSpec(stats, config) {
     .map((c) => {
       const s = stats[c];
       if (s.type === 'number') {
-        return { name: c, kind: 'number', min: s.min, max: s.max, mean: s.mean, scale: s.max - s.min || 1, ...(fill && { fill: s.median }) };
+        // min/max/mean stay in the input's units; lo/scale map what the
+        // formula reads (log(x) on a log scale) to [0, 1].
+        const log = useLogInput(c, stats, config, rows);
+        const lo = log ? Math.log(s.min) : s.min, hi = log ? Math.log(s.max) : s.max;
+        const logs = log ? rows.map((r) => toNumber(r[c])).filter((v) => v > 0).map(Math.log) : [];
+        return {
+          name: c, kind: 'number', min: s.min, max: s.max, mean: s.mean, lo, scale: hi - lo || 1,
+          ...(log && { log, logMean: logs.length ? logs.reduce((a, v) => a + v, 0) / logs.length : (lo + hi) / 2 }),
+          ...(fill && { fill: s.median }),
+        };
       }
       const [baseline, ...levels] = s.values;
       const freq = Object.fromEntries(s.values.map((v) => [v, s.counts[v] / s.count]));
@@ -93,8 +145,8 @@ function encodeInputs(row, spec, filled) {
     }
     if (inp.kind === 'number') {
       const v = toNumber(raw);
-      if (!Number.isFinite(v)) return null;
-      x.push((v - inp.min) / inp.scale);
+      if (!Number.isFinite(v) || (inp.log && !(v > 0))) return null;
+      x.push((termInput(inp, v) - inp.lo) / inp.scale);
     } else {
       const v = String(raw).trim();
       for (const lvl of inp.levels) x.push(v === lvl ? 1 : 0);
@@ -125,7 +177,9 @@ export function encodeDataset(rows, spec) {
 // Convert normalised weights/bias into a plain-JSON model in original units:
 //   outcome = intercept + Σ weight·x (numbers) + Σ weights[value] (enums)
 // On a log scale the right-hand side is log(outcome), so a weight w means
-// "× e^w per unit" (about w·100 % for small w).
+// "× e^w per unit" (about w·100 % for small w). A log-scale input enters as
+// w·log(x): with a log outcome, w is the % change in the outcome per 1 % more
+// x (an elasticity).
 export function buildModel(spec, { weights, bias }) {
   const ys = spec.outcome.scale;
   let intercept = spec.outcome.offset + ys * bias;
@@ -133,8 +187,12 @@ export function buildModel(spec, { weights, bias }) {
   const terms = spec.inputs.map((inp) => {
     if (inp.kind === 'number') {
       const weight = (ys * weights[k++]) / inp.scale;
-      intercept -= weight * inp.min;
-      return { name: inp.name, kind: 'number', weight, min: inp.min, max: inp.max, mean: inp.mean, ...('fill' in inp && { fill: inp.fill }) };
+      intercept -= weight * inp.lo;
+      return {
+        name: inp.name, kind: 'number', weight, min: inp.min, max: inp.max, mean: inp.mean,
+        ...(inp.log && { log: true, logMean: inp.logMean }),
+        ...('fill' in inp && { fill: inp.fill }),
+      };
     }
     const w = { [inp.baseline]: 0 };
     for (const lvl of inp.levels) w[lvl] = ys * weights[k++];
@@ -147,7 +205,7 @@ export function buildModel(spec, { weights, bias }) {
 // Effect size in outcome units: how much the term can move the outcome across
 // its observed range (numbers) or between its extreme categories (enums).
 export function termImportance(term) {
-  if (term.kind === 'number') return Math.abs(term.weight) * (term.max - term.min);
+  if (term.kind === 'number') return Math.abs(term.weight) * (termInput(term, term.max) - termInput(term, term.min));
   const w = Object.values(term.weights);
   return Math.max(...w) - Math.min(...w);
 }
@@ -159,7 +217,7 @@ export function termSign(term) {
 // What a term adds for an "average" record: weight·mean for numbers, the
 // frequency-weighted category weight for enums.
 function averageEffect(t) {
-  if (t.kind === 'number') return t.weight * (t.mean ?? 0);
+  if (t.kind === 'number') return t.weight * (t.log ? t.logMean : t.mean ?? 0);
   if (!t.freq) return 0;
   return Object.entries(t.freq).reduce((sum, [v, p]) => sum + p * (t.weights[v] ?? 0), 0);
 }
@@ -237,10 +295,11 @@ export function predict(model, record, opts = {}) {
     if (t.kind === 'number') {
       input = toNumber(raw);
       if (!Number.isFinite(input)) throw new Error(`"${t.name}" must be a number.`);
+      if (t.log && !(input > 0)) throw new Error(`"${t.name}" must be above 0 (it is on a log scale).`);
       if (input < t.min || input > t.max) {
         warnings.push(`${t.name} = ${input} is outside the training range ${t.min} – ${t.max}; the result is an extrapolation.`);
       }
-      c = t.weight * input;
+      c = t.weight * termInput(t, input);
     } else {
       input = String(raw).trim();
       if (!(input in t.weights)) {

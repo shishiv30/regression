@@ -138,6 +138,15 @@ input, select {
 .field.role-location { border-left-color: var(--loc); }
 .group-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 0 0 4px; cursor: pointer; }
 .group-toggle input { margin: 0; }
+.diagnosis { margin: 10px 0; }
+.diagnosis summary { font-weight: 600; cursor: pointer; }
+.diagnosis .hints { margin: 6px 0 8px; padding-left: 18px; font-size: 12px; }
+.diagnosis .hints li { margin: 4px 0; }
+.diagnosis .btn.small { font-size: 11px; padding: 1px 6px; margin-left: 4px; }
+.weights.diag td, .weights.diag th { font-size: 11px; }
+.suspect-icon { color: var(--warn, #d97706); cursor: help; }
+.scale-pick { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 0 0 4px; }
+.scale-pick select { font-size: 12px; padding: 1px 4px; }
 .field.role-ignore { opacity: 0.7; }
 .field.role-label { border-left-color: var(--muted); }
 .field-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

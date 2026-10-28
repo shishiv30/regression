@@ -11,11 +11,13 @@ import {
   suggestMapping,
   predictBatch,
   summarizeResults,
+  diagnoseGaps,
   resultsToCsv,
   modelLocation,
   detectCoords,
   DEFAULT_NEIGHBOURS,
   DEFAULT_OUTLIER_CUTOFF,
+  MIN_GROUP_ROWS,
   storage,
 } from './calc/index.js';
 import { renderFields } from './ui/fields.js';
@@ -28,7 +30,7 @@ import { createGroupGraphs } from './ui/groupGraphs.js';
 import { esc } from './ui/format.js';
 
 const $ = (sel) => document.querySelector(sel);
-const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS, outlierCutoff: DEFAULT_OUTLIER_CUTOFF, logOutcome: 'auto', compsBy: 'auto', missing: 'drop' };
+const DEFAULTS = { roles: {}, types: {}, scales: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS, outlierCutoff: DEFAULT_OUTLIER_CUTOFF, logOutcome: 'auto', compsBy: 'auto', missing: 'drop', ridge: 'auto', minGroupRows: MIN_GROUP_ROWS };
 
 const state = {
   dataset: null,
@@ -48,7 +50,8 @@ const dataTable = createDataTable($('#view-table'));
 const groupGraphs = createGroupGraphs($('#group-graphs'), $('#tooltip'), { onGroup: (g) => selectGroup(g) });
 
 // Fingerprint of the field setup, to tell when a stored model is out of date.
-const setupKey = (c) => JSON.stringify([c.roles, c.types, c.groupBy ?? null]);
+// Input scales join it only when set, so models saved before them stay current.
+const setupKey = (c) => JSON.stringify([c.roles, c.types, c.groupBy ?? null, ...(Object.keys(c.scales ?? {}).length ? [c.scales] : [])]);
 
 function setStatus(msg, kind = '') {
   const el = $('#status');
@@ -62,7 +65,7 @@ function persistConfig() {
 
 function loadDataset(dataset, { fresh }) {
   state.dataset = dataset;
-  if (fresh) state.config = { ...state.config, roles: {}, types: {}, groupBy: null };
+  if (fresh) state.config = { ...state.config, roles: {}, types: {}, scales: {}, groupBy: null };
   state.stats = analyzeColumns(dataset.columns, dataset.rows, state.config.types);
   if (fresh) state.config.roles = suggestRoles(dataset.columns, state.stats);
   renderAll();
@@ -114,7 +117,10 @@ function renderAll() {
   $('#steps').value = config.steps;
   $('#lr').value = config.learningRate;
   $('#optimizer').value = config.optimizer;
+  $('#ridge').value = config.ridge === 0 ? 'off' : 'auto';
   $('#neighbours').value = config.neighbours;
+  $('#min-group').value = config.minGroupRows ?? MIN_GROUP_ROWS;
+  $('#min-group-ctl').hidden = !config.groupBy;
   $('#outliers').value = String(config.outlierCutoff);
   $('#missing').value = config.missing === 'median' ? 'median' : 'drop';
   $('#log-outcome').value = config.logOutcome === true ? 'log' : config.logOutcome === false ? 'linear' : 'auto';
@@ -179,7 +185,26 @@ function renderBatchViews() {
   const results = group === null ? output.results : output.results.filter((r) => r.group === group);
   const shown = group === null ? output : { results, summary: summarizeResults(results) };
   const scope = group === null ? null : { groupBy: model.groupBy, group, total: output.results.length };
-  renderBatch($('#batch'), { batch, model, mapping: state.mapping, output: shown, scope }, {
+  // The same rows under the model trained before this one, when the batch file is the same.
+  const prev = state.previousRun?.fileName === batch.fileName && state.previousRun.results.length === output.results.length ? state.previousRun.results : null;
+  const previous = prev ? summarizeResults(group === null ? prev : prev.filter((r) => r.group === group)) : null;
+  const diag = state.diagnosis?.output === output && state.diagnosis.group === group ? state.diagnosis.value : undefined;
+  renderBatch($('#batch'), { batch, model, mapping: state.mapping, output: shown, scope, previous, diagnosis: diag }, {
+    onDiagnose() {
+      setStatus('Diagnosing gaps…');
+      // Let the status paint before the (up to ~1 s) work.
+      setTimeout(() => {
+        state.diagnosis = { output, group, value: diagnoseGaps(model, batch.rows, state.mapping, output.results, group) };
+        setStatus('');
+        renderBatchViews();
+      }, 20);
+    },
+    onIgnore(cols) {
+      for (const c of cols) if (state.config.roles[c] !== undefined) state.config.roles[c] = 'ignore';
+      persistConfig();
+      renderAll();
+      setStatus(`${cols.join(', ')} set to Ignore. Press Train to retrain; the batch figures will show the previous run's for comparison.`);
+    },
     onMapping(kind, term, column) {
       if (kind === 'input') state.mapping.inputs[term] = column;
       else state.mapping[kind] = column;
@@ -260,6 +285,10 @@ function onFieldChange(col, key, value) {
   const { config } = state;
   if (key === 'groupBy') {
     config.groupBy = value ? col : null;
+  } else if (key === 'scale') {
+    config.scales = { ...config.scales };
+    if (value === 'auto') delete config.scales[col];
+    else config.scales[col] = value;
   } else {
     // value is a kind from the field dropdown: number / enum (inputs), outcome,
     // lat, lng, label or ignore.
@@ -291,7 +320,9 @@ async function onTrain() {
   config.steps = Math.max(1, Math.min(100000, Math.round(Number($('#steps').value) || DEFAULTS.steps)));
   config.learningRate = Number($('#lr').value) > 0 ? Number($('#lr').value) : DEFAULTS.learningRate;
   config.optimizer = $('#optimizer').value;
+  config.ridge = $('#ridge').value === 'off' ? 0 : 'auto';
   config.neighbours = Math.max(1, Math.min(100, Math.round(Number($('#neighbours').value) || DEFAULTS.neighbours)));
+  config.minGroupRows = Math.max(2, Math.round(Number($('#min-group').value) || MIN_GROUP_ROWS));
   config.outlierCutoff = Number($('#outliers').value) || 0;
   config.logOutcome = { auto: 'auto', linear: false, log: true }[$('#log-outcome').value];
   config.compsBy = $('#comps').value || null;
@@ -316,6 +347,8 @@ async function onTrain() {
       shouldStop: () => state.stopRequested,
     });
     model.setupKey = setupKey(config);
+    // Keep the old model's batch results to compare the new one with.
+    if (state.batch && state.batchOutput) state.previousRun = { fileName: state.batch.fileName, results: state.batchOutput.results };
     state.model = model;
     const saved = storage.saveModel(model);
     state.training = false;
@@ -408,7 +441,7 @@ onSampleChange($('#batch-sample'), importBatchText);
 $('#clear-btn').addEventListener('click', () => {
   if (!confirm('Remove the saved dataset, field setup and model from this browser?')) return;
   storage.clearAll();
-  Object.assign(state, { dataset: null, stats: {}, config: { ...DEFAULTS, roles: {}, types: {} }, model: null, batch: null, mapping: null });
+  Object.assign(state, { dataset: null, stats: {}, config: { ...DEFAULTS, roles: {}, types: {}, scales: {} }, model: null, batch: null, mapping: null });
   setView('weights');
   renderAll();
 });

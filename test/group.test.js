@@ -75,4 +75,16 @@ describe('group-by training', () => {
     expect(results[2].error).toMatch(/land/);
     expect(summary).toMatchObject({ rows: 3, withActual: 1, noEstimate: 1 });
   }, 60000);
+
+  it('honours the minimum records per group and rejects groups with too few records per weight', async () => {
+    const loose = await trainModel(rows, stats, { ...config, minGroupRows: 5 });
+    expect(Object.keys(loose.groups).sort()).toEqual(['condo', 'house', 'land']);
+
+    // 12 records, but an enum with 8 values: 9 weights need 18 records.
+    const tag = (i) => String.fromCharCode(97 + (i % 8));
+    const wide = [...rows, ...Array.from({ length: 12 }, (_, i) => ({ kind: 'lot', x: String(i), z: tag(i), y: String(10 + i) }))];
+    const cols = ['kind', 'x', 'z', 'y'];
+    const m = await trainModel(wide, analyzeColumns(cols, wide, { z: 'enum' }), { ...config, types: { z: 'enum' }, minGroupRows: 10 });
+    expect(m.skipped.find((g) => g.value === 'lot').reason).toMatch(/12 complete records for 9 weights/);
+  });
 });

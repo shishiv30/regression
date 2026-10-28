@@ -19,9 +19,15 @@ const median = (xs) => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
-// Solve min ‖X·w + b − y‖² over the rows in `keep`, with a tiny ridge on w so
-// unused enum levels or duplicate columns don't make the system singular.
-export function leastSquares(X, y, keep = X.map((_, i) => i)) {
+// Solve min mean((X·w + b − y)²) + ridge·‖w‖² over the rows in `keep`. A
+// tiny ridge is always added so unused enum levels or duplicate columns don't
+// make the system singular.
+export function leastSquares(X, y, keep = X.map((_, i) => i), ridge = 0) {
+  return solve(normalEquations(X, y, keep), keep.length, ridge);
+}
+
+// Xᵀ·X | Xᵀ·y (upper triangle) with an intercept column, for solve().
+function normalEquations(X, y, keep) {
   const d = X[0].length + 1; // last column is the intercept
   const A = Array.from({ length: d }, () => new Float64Array(d + 1));
   for (const i of keep) {
@@ -31,9 +37,15 @@ export function leastSquares(X, y, keep = X.map((_, i) => i)) {
       A[a][d] += x[a] * y[i];
     }
   }
+  return A;
+}
+
+function solve(normal, n, ridge) {
+  const d = normal.length;
+  const A = normal.map((r) => Float64Array.from(r));
   for (let a = 0; a < d; a++) {
     for (let b = 0; b < a; b++) A[a][b] = A[b][a];
-    if (a < d - 1) A[a][a] += 1e-9 * keep.length + 1e-12;
+    if (a < d - 1) A[a][a] += (ridge + 1e-9) * n + 1e-12;
   }
   // Gaussian elimination with partial pivoting.
   for (let c = 0; c < d; c++) {
@@ -57,16 +69,43 @@ export function leastSquares(X, y, keep = X.map((_, i) => i)) {
 
 // Each row's estimate from a fit that did not see it (k-fold). Used to
 // measure honest errors for the likely ranges.
-export function crossFitted(X, y, folds = 5) {
+export function crossFitted(X, y, folds = 5, ridge = 0) {
   const out = new Array(X.length).fill(NaN);
   for (let f = 0; f < folds; f++) {
     const keep = [];
     for (let i = 0; i < X.length; i++) if (i % folds !== f) keep.push(i);
     if (keep.length < 2) continue;
-    const { weights, bias } = leastSquares(X, y, keep);
+    const { weights, bias } = leastSquares(X, y, keep, ridge);
     for (let i = f; i < X.length; i += folds) out[i] = X[i].reduce((a, v, j) => a + v * weights[j], bias);
   }
   return out;
+}
+
+// Ridge strengths tried, on inputs scaled to [0, 1]; 0 is plain least squares.
+export const RIDGE_GRID = [0, 1e-4, 3e-4, 1e-3, 3e-3, 0.01, 0.03, 0.1, 0.3, 1];
+
+// The ridge strength whose fits miss left-out records least (5-fold). With
+// plenty of records per weight this is 0 or tiny; with few (a small group, an
+// enum with many values) it pulls the weights towards 0, so the formula
+// stops memorising its records.
+export function chooseRidge(X, y, folds = 5) {
+  if (X.length < 2 * folds) return 0;
+  const parts = [];
+  for (let f = 0; f < folds; f++) {
+    const keep = [];
+    for (let i = 0; i < X.length; i++) if (i % folds !== f) keep.push(i);
+    parts.push({ f, normal: normalEquations(X, y, keep), n: keep.length });
+  }
+  let best = { ridge: 0, err: Infinity };
+  for (const ridge of RIDGE_GRID) {
+    let err = 0;
+    for (const { f, normal, n } of parts) {
+      const { weights, bias } = solve(normal, n, ridge);
+      for (let i = f; i < X.length; i += folds) err += (X[i].reduce((a, v, j) => a + v * weights[j], bias) - y[i]) ** 2;
+    }
+    if (err < best.err * (1 - 1e-6)) best = { ridge, err };
+  }
+  return best.ridge;
 }
 
 // X, y: the encoded training data. Returns the indexes of outlier rows, each

@@ -1,6 +1,6 @@
 // Main-area "Data table" tab: every row of the batch CSV with all its
 // columns, plus the estimate and gap. Click a header to sort.
-import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge } from './format.js';
+import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge, suspectAlert } from './format.js';
 
 const LEVEL_ORDER = { high: 0, medium: 1, low: 2 };
 const MAX_ROWS = 2000; // keep the DOM responsive on big files
@@ -60,7 +60,7 @@ export function createDataTable(el) {
           if (c.key === '#') return `<td class="num muted">${r.index + 1}</td>`;
           if (c.key === 'est') {
             if (r.estimate === null) return `<td class="num est" title="${esc(r.error ?? '')}"><span class="warn">no formula</span></td>`;
-            return `<td class="num est"><b>${fmt(r.estimate)}</b>${missingAlert(r.imputed, r.missingLocation)}</td>`;
+            return `<td class="num est"><b>${fmt(r.estimate)}</b>${missingAlert(r.imputed, r.missingLocation)}${suspectAlert(r.suspect)}</td>`;
           }
           if (c.key === 'conf') return `<td class="est">${confidenceBadge(r.confidence)}</td>`;
           if (c.key === 'range') return `<td class="num est">${r.low === null ? '<span class="muted">—</span>' : rangeText(r)}</td>`;

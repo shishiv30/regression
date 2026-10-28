@@ -1,6 +1,6 @@
 // Outcome report (left) and the prediction form (right of the graph).
 import { termImportance, isThin } from '../calc/index.js';
-import { fmt, signed, esc, effect, spreadText, pctText, rangeText, confidenceBadge } from './format.js';
+import { fmt, signed, esc, effect, perTenPct, spreadText, pctText, rangeText, confidenceBadge } from './format.js';
 
 export function renderReport(el, model, { stale, shown, onGroup } = {}) {
   if (!model) {
@@ -101,7 +101,8 @@ function detailHtml(model, { group = false } = {}) {
       const imp = termImportance(t);
       const share = `<div class="bar"><span style="width:${((imp / total) * 100).toFixed(1)}%"></span></div>`;
       if (t.kind === 'number') {
-        return `<tr><td>${esc(t.name)}</td><td class="num ${t.weight >= 0 ? 'pos' : 'neg'}">${model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</td><td>${share}</td></tr>`;
+        const name = t.log ? `${esc(t.name)} <span class="muted" title="Log scale: each 10% more has the same effect at any size">log</span>` : esc(t.name);
+        return `<tr><td>${name}</td><td class="num ${t.weight >= 0 ? 'pos' : 'neg'}">${t.log ? perTenPct(model, t) : model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</td><td>${share}</td></tr>`;
       }
       const cats = Object.entries(t.weights)
         .filter(([k]) => k !== t.baseline)
@@ -112,7 +113,7 @@ function detailHtml(model, { group = false } = {}) {
     .join('');
 
   const eq = [`${fmt(model.intercept)}`]
-    .concat(model.terms.map((t) => (t.kind === 'number' ? `${signed(t.weight)}·${esc(t.name)}` : `+ w[${esc(t.name)}]`)))
+    .concat(model.terms.map((t) => (t.kind === 'number' ? `${signed(t.weight)}·${t.log ? `log(${esc(t.name)})` : esc(t.name)}` : `+ w[${esc(t.name)}]`)))
     .concat(model.location ? ['+ location'] : [])
     .join(' ');
   const lhs = model.outcome.log ? `log(${esc(model.outcome.name)})` : esc(model.outcome.name);
@@ -127,11 +128,12 @@ function detailHtml(model, { group = false } = {}) {
     ${group ? metricsHtml(model.metrics) : ''}
     ${thin}
     ${dropped}
+    ${model.training?.ridge ? `<p class="muted small" title="Ridge regression: picked by 5-fold cross-validation to keep the formula from memorising its records">Regularisation ${fmt(model.training.ridge)} (ridge)</p>` : ''}
     <h3>Loss (MSE) per step</h3>
     <canvas class="loss" height="90"></canvas>
     <h3>Weights</h3>
     <table class="weights">
-      <thead><tr><th>Field</th><th class="num" ${model.outcome.log ? 'title="Log scale: the change in the outcome per unit (numbers) or vs. the baseline (enums)"' : ''}>${model.outcome.log ? 'Effect' : 'Weight'}</th><th>Effect share</th></tr></thead>
+      <thead><tr><th>Field</th><th class="num" ${model.outcome.log ? 'title="Log scale: the change in the outcome per unit (numbers; per 10% more for a log-scale input) or vs. the baseline (enums)"' : ''}>${model.outcome.log ? 'Effect' : 'Weight'}</th><th>Effect share</th></tr></thead>
       <tbody>
         <tr><td>intercept</td><td class="num">${fmt(model.intercept)}</td><td></td></tr>
         ${weightRows}

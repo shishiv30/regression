@@ -1,23 +1,27 @@
 // Public API of the calculation layer. The UI only imports from here.
-import { buildSpec, encodeDataset, buildModel, evaluate, predict, toModel, toValue } from './model.js';
+import { buildSpec, encodeDataset, buildModel, evaluate, predict, toModel, toValue, correlation } from './model.js';
 import { errorRange, rangeMode } from './confidence.js';
 import { analyzeColumns, toNumber } from './schema.js';
 import { trainLinear } from './trainer.js';
-import { findOutliers, crossFitted } from './outliers.js';
+import { findOutliers, crossFitted, chooseRidge } from './outliers.js';
 import { locationFields, buildLocation, combineLocationMetrics, neighbourResiduals, DEFAULT_NEIGHBOURS } from './location.js';
 
 export { parseCsv } from './csv.js';
 export { analyzeColumns, suggestRoles, detectCoords } from './schema.js';
-export { validateConfig, predict, termImportance, termSign, isGrouped, resolveModel, modelInputs, modelLocation, useLogOutcome } from './model.js';
+export { validateConfig, predict, termImportance, termSign, isGrouped, resolveModel, modelInputs, modelLocation, useLogOutcome, useLogInput } from './model.js';
 export { LEVELS } from './confidence.js';
 export { DEFAULT_NEIGHBOURS } from './location.js';
 export { DEFAULT_OUTLIER_CUTOFF } from './outliers.js';
-export { suggestMapping, predictBatch, summarizeResults, resultsToCsv } from './batch.js';
+export { suggestMapping, predictBatch, summarizeResults, resultsToCsv, diagnoseGaps } from './batch.js';
 export * as storage from './storage.js';
 
 const MAX_HISTORY_POINTS = 200;
-// A group needs at least this many complete records to get its own formula.
-export const MIN_GROUP_ROWS = 10;
+// A group needs at least this many complete records to get its own formula
+// (config.minGroupRows overrides it), and at least MIN_ROWS_PER_WEIGHT per
+// weight: with fewer, a formula memorises its records and estimates new ones
+// no better than a guess. A rejected group's records get no estimate.
+export const MIN_GROUP_ROWS = 30;
+export const MIN_ROWS_PER_WEIGHT = 2;
 // In a group, an input blank for more than this share of records is left out
 // of that group's formula (e.g. bedrooms and bathrooms for LAND).
 export const MAX_BLANK_SHARE = 0.5;
@@ -38,7 +42,7 @@ export async function trainModel(rows, stats, config, opts = {}) {
 }
 
 async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowIndex } = {}) {
-  const spec = buildSpec(stats, config);
+  const spec = buildSpec(stats, config, rows);
   const encoded = encodeDataset(rows, spec);
   const { dropped, filled } = encoded;
   let { X, y, used } = encoded;
@@ -68,12 +72,16 @@ async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowInd
   // is kept within half the training range of it (on a log scale an
   // unbounded one could overflow).
   const clamp = (v) => Math.min(1.5, Math.max(-0.5, Number.isFinite(v) ? v : 0.5));
-  const unseen = new Map(crossFitted(X, y).map((v, i) => [used[i], spec.outcome.offset + clamp(v) * spec.outcome.scale]));
+  // Ridge strength: 'auto' (default) picks it by 5-fold cross-validation,
+  // a number fixes it, 0 / null turns it off.
+  const ridge = config.ridge === 'auto' || config.ridge === undefined ? chooseRidge(X, y) : Number(config.ridge) || 0;
+  const unseen = new Map(crossFitted(X, y, 5, ridge).map((v, i) => [used[i], spec.outcome.offset + clamp(v) * spec.outcome.scale]));
 
   const result = await trainLinear(X, y, {
     steps: config.steps,
     learningRate: config.learningRate,
     optimizer: config.optimizer,
+    ridge,
     onProgress,
     shouldStop,
   });
@@ -98,6 +106,7 @@ async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowInd
       stopped: result.stopped,
       learningRate: config.learningRate,
       optimizer: config.optimizer,
+      ridge,
       rowsUsed: used.length,
       rowsDropped: dropped,
       rowsFilled: filled,
@@ -118,15 +127,41 @@ async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowInd
     ...holdout.map((r) => [toNumber(r[name]), formulaOf(r)]),
   ], rangeMode(model.outcome), 'left-out');
 
+  const size = coords ? sizeField(used, model, stats, config.compsBy) : null;
+  if (config.outlierCutoff > 0) out.screen = valueScreen(used, model.outcome, size, config.outlierCutoff);
+
   if (coords) {
     const estimate = (row) => toModel(model.outcome, predict(model, row, { location: false }).value);
     const neighbours = config.neighbours ?? DEFAULT_NEIGHBOURS;
-    const size = sizeField(used, model, stats, config.compsBy);
     const { location, skipped } = buildLocation(used, estimate, coords, model.outcome, { neighbours, rowIndex, size, holdout, unseen: (row) => unseen.get(row) });
     if (location) out.location = location;
     else out.locationSkipped = skipped;
   }
   return out;
+}
+
+// What a plausible outcome looks like, to screen the actual values of a
+// batch: the median and robust spread (1.4826 × MAD) of log(outcome ÷ size)
+// over the training records (of log(outcome), or the outcome itself when it
+// can be 0 or less, without a size field). An actual value further than
+// `cutoff` spreads from it is out of line with every training record of its
+// kind, whatever the estimate says.
+function valueScreen(rows, outcome, size, cutoff) {
+  const vals = [];
+  for (const row of rows) {
+    const v = toNumber(row[outcome.name]), s = size ? toNumber(row[size]) : 1;
+    if (outcome.min > 0 ? v > 0 && s > 0 : Number.isFinite(v)) vals.push(outcome.min > 0 ? Math.log(v / s) : v);
+  }
+  if (vals.length < 10) return null;
+  const mid = median(vals);
+  const spread = 1.4826 * median(vals.map((v) => Math.abs(v - mid)));
+  return spread > 0 ? { size, log: outcome.min > 0, median: mid, spread, cutoff } : null;
+}
+
+function median(xs) {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 // The field comparables are matched and priced by (e.g. sqft): the one named,
@@ -145,18 +180,6 @@ function sizeField(rows, model, stats, compsBy) {
     if (r >= 0.3 && (!best || r > best.r)) best = { name: t.name, r };
   }
   return best?.name ?? null;
-}
-
-function correlation(a, b) {
-  const n = a.length;
-  const ma = a.reduce((s, v) => s + v, 0) / n, mb = b.reduce((s, v) => s + v, 0) / n;
-  let sab = 0, saa = 0, sbb = 0;
-  for (let i = 0; i < n; i++) {
-    sab += (a[i] - ma) * (b[i] - mb);
-    saa += (a[i] - ma) ** 2;
-    sbb += (b[i] - mb) ** 2;
-  }
-  return saa > 0 && sbb > 0 ? sab / Math.sqrt(saa * sbb) : 0;
 }
 
 // Fewer than ~2 records per weight lets a formula memorise its training rows:
@@ -202,15 +225,22 @@ async function trainGrouped(rows, stats, config, { onProgress, shouldStop, rowIn
     for (const c of columns) if ((roles[c] === 'lat' || roles[c] === 'lng') && sub[c].type !== 'number') roles[c] = 'ignore';
     const cfg = { ...config, roles, groupBy: null };
 
-    let used;
+    let used, weights;
     try {
-      ({ used } = encodeDataset(subset, buildSpec(sub, cfg)));
+      const enc = encodeDataset(subset, buildSpec(sub, cfg));
+      ({ used } = enc);
+      weights = enc.X[0].length + 1;
     } catch (e) {
       skipped.push({ value, rows: subset.length, reason: e.message });
       continue;
     }
-    if (used.length < MIN_GROUP_ROWS) {
-      skipped.push({ value, rows: subset.length, reason: `only ${used.length} complete records (needs ${MIN_GROUP_ROWS})` });
+    const minRows = config.minGroupRows > 0 ? config.minGroupRows : MIN_GROUP_ROWS;
+    if (used.length < minRows) {
+      skipped.push({ value, rows: subset.length, reason: `only ${used.length} complete records (needs ${minRows})` });
+      continue;
+    }
+    if (used.length < MIN_ROWS_PER_WEIGHT * weights) {
+      skipped.push({ value, rows: subset.length, reason: `only ${used.length} complete records for ${weights} weights (needs ${MIN_ROWS_PER_WEIGHT} per weight); use fewer inputs, e.g. an enum with many values as a number or ignored` });
       continue;
     }
 

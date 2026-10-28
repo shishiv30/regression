@@ -1,11 +1,11 @@
 // Right panel, batch section: column mapping, gap summary and results table.
 import { modelInputs } from '../calc/index.js';
-import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge } from './format.js';
+import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge, suspectAlert } from './format.js';
 
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(1)}%`);
 const signedPct = (v) => (v === null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(1)}%`);
 
-export function renderBatch(el, { batch, model, mapping, output, scope }, { onMapping, onDownload } = {}) {
+export function renderBatch(el, { batch, model, mapping, output, scope, previous = null, diagnosis }, { onMapping, onDownload, onDiagnose, onIgnore } = {}) {
   if (!batch) {
     el.innerHTML = '';
     return;
@@ -42,6 +42,8 @@ export function renderBatch(el, { batch, model, mapping, output, scope }, { onMa
     </details>
 
     ${summaryHtml(s, mapping, model)}
+    ${previous && s.withActual && previous.withActual ? previousHtml(s, previous) : ''}
+    ${mapping.actual && s.withActual ? diagnosisHtml(diagnosis, s) : ''}
 
     <div class="batch-actions">
       <button type="button" class="btn" id="batch-download">Download results CSV</button>
@@ -56,7 +58,7 @@ export function renderBatch(el, { batch, model, mapping, output, scope }, { onMa
               <td>${esc(r.label)}</td>
               <td class="num"${r.error ? ` title="${esc(r.error)}"` : r.low !== null ? ` title="likely ${rangeText(r)}"` : ''}>${r.estimate === null ? '<span class="warn">no formula</span>' : fmt(r.estimate) + missingAlert(r.imputed, r.missingLocation)}${r.confidence ? ` ${confidenceBadge(r.confidence)}` : ''}</td>
               <td class="num">${r.actual === null ? '<span class="muted">—</span>' : fmt(r.actual)}</td>
-              <td class="num">${signedPct(r.gapPct)}</td>
+              <td class="num">${signedPct(r.gapPct)}${suspectAlert(r.suspect)}</td>
             </tr>`,
           )
           .join('')}
@@ -69,6 +71,48 @@ export function renderBatch(el, { batch, model, mapping, output, scope }, { onMa
     sel.addEventListener('change', () => onMapping(sel.dataset.kind, sel.dataset.term, sel.value || null)),
   );
   el.querySelector('#batch-download').addEventListener('click', onDownload);
+  el.querySelector('#diagnose-btn')?.addEventListener('click', onDiagnose);
+  el.querySelectorAll('[data-ignore]').forEach((b) => b.addEventListener('click', () => onIgnore(JSON.parse(b.dataset.ignore))));
+}
+
+// The same rows' figures from the model trained before this one.
+function previousHtml(s, p) {
+  const d = s.medianApe - p.medianApe;
+  const verdict = Math.abs(d) < 0.0005 ? 'about the same' : d < 0 ? '<span class="pos">better</span>' : '<span class="neg">worse</span>';
+  return `<p class="muted small">Before the last retrain: median |gap| ${pct(p.medianApe)}, within ±10% ${pct(p.within10)}, mean |gap| ${pct(p.mape)} (${p.withActual} rows). Now ${verdict}.</p>`;
+}
+
+// What drives the big gaps: one row per input, then plain-language hints.
+function diagnosisHtml(d, s) {
+  if (d === undefined) {
+    return `<div class="batch-actions"><button type="button" class="btn" id="diagnose-btn" title="Re-estimate the compared rows with each field left out, and look at what the biggest gaps have in common">Find what drives the big gaps</button></div>`;
+  }
+  if (d === null) return `<p class="muted small">Too few compared rows to diagnose (needs 20).</p>`;
+  const share = ({ big, rest }) => `${pct(big)} <span class="muted">vs ${pct(rest)}</span>`;
+  const verdict = { hurts: '<span class="neg">hurts</span>', helps: '<span class="pos">helps</span>', unclear: '<span class="muted">unclear</span>' };
+  const rows = d.fields
+    .map((f) => `<tr><td>${esc(f.name)}</td><td class="num">${pct(f.without.medianApe)}</td><td>${verdict[f.verdict]}</td><td class="num${f.driverPattern ? ' warn' : ''}">${share(f.driver)}</td><td class="num${f.unusualPattern ? ' warn' : ''}">${share(f.unusual)}</td></tr>`)
+    .join('');
+  const hints = [];
+  for (const f of d.fields) {
+    const name = `<b>${esc(f.name)}</b>`;
+    if (f.verdict === 'hurts') {
+      hints.push(`<li>Estimates were better with ${name} left out: median |gap| ${pct(d.before.medianApe)} → ${pct(f.without.medianApe)}, on most rows (paired test, 95%). Try ignoring it and retrain; the result shows next to this run's. <button type="button" class="btn small" data-ignore='${esc(JSON.stringify(f.columns))}'>Ignore ${esc(f.name)}</button></li>`);
+    }
+    if (f.driverPattern) hints.push(`<li>${name} pushed ${pct(f.driver.big)} of the biggest gaps further off, against ${pct(f.driver.rest)} of the other rows. Check its values, its Scale (Log / Linear), or whether it means the same in these records as in training.</li>`);
+    if (f.unusualPattern) hints.push(`<li>${pct(f.unusual.big)} of the biggest gaps have an unusual ${name} (blank, outside the training range, or rarely seen in training), against ${pct(f.unusual.rest)} of the other rows. More training records like these would help; for an enum with many rare values, try it as a number or Ignore.</li>`);
+  }
+  if (!hints.length) hints.push(`<li>No field stands out: leaving any one out doesn't help, and the biggest gaps look like the other rows. They likely come from things the data doesn't record.</li>`);
+  return `
+    <details class="diagnosis" open>
+      <summary>What drives the big gaps</summary>
+      <p class="muted small">${d.rows} compared rows; the biggest gaps are the ${d.bigRows} with |gap| ≥ ${pct(d.bigCut)}. Checked on this file, so confirm a change by retraining.</p>
+      <ul class="hints">${hints.join('')}</ul>
+      <table class="weights diag">
+        <thead><tr><th>Field</th><th class="num" title="Median |gap| with this field set to its training average (for the location: no location adjustment)">Without it</th><th title="Paired test on each row's |gap| with and without the field (95%)">Field</th><th class="num" title="Share of the biggest gaps (vs the other rows) where this field moved the estimate furthest towards its error">Main driver</th><th class="num" title="Share of the biggest gaps (vs the other rows) with a blank value, a value outside the training range or one rarely seen in training">Unusual value</th></tr></thead>
+        <tbody><tr><td class="muted">all fields</td><td class="num">${pct(d.before.medianApe)}</td><td></td><td></td><td></td></tr>${rows}</tbody>
+      </table>
+    </details>`;
 }
 
 function summaryHtml(s, mapping, model) {
@@ -84,6 +128,7 @@ function summaryHtml(s, mapping, model) {
   const noActual = s.rows - s.noEstimate - s.withActual;
   return `
     ${noEstimate}
+    ${s.screened ? `<div class="notice">${s.screened} row${s.screened > 1 ? 's are' : ' is'} left out of the gap figures (⚑ in the table, hover for why): the actual value is out of line with every training record of its kind, or an input is far outside the training range. They still get an estimate. Usually a typo or a different kind of record.</div>` : ''}
     ${noActual ? `<div class="notice">${noActual} of ${s.rows} rows have no ${esc(mapping.actual)}; they get an estimate but no gap.</div>` : ''}
     <div class="metrics">
       <div><span>Compared</span><b>${s.withActual}</b></div>

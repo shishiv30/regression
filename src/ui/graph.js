@@ -1,7 +1,7 @@
 // Canvas "link net": every input field is a node with an edge pointing to the
 // outcome node. Edge width = effect size, colour = sign of the weight.
 import { termImportance, termSign } from '../calc/index.js';
-import { fmt, signed, esc, effect, spreadText } from './format.js';
+import { fmt, signed, esc, effect, perTenPct, spreadText } from './format.js';
 
 function palette() {
   const s = getComputedStyle(document.documentElement);
@@ -116,7 +116,7 @@ export function createGraph(canvas, tooltip) {
         label = signed(pc.contribution);
         labelColor = pc.contribution >= 0 ? c.pos : c.neg;
       } else if (nd.t.kind === 'location') label = `${spreadText(model, nd.imp / 2)} · ${nd.t.neighbours} nearby`;
-      else if (nd.t.kind === 'number') label = model.outcome.log ? `${effect(model, nd.t.weight)} /unit` : `w ${fmt(nd.t.weight)}`;
+      else if (nd.t.kind === 'number') label = nd.t.log ? perTenPct(model, nd.t) : model.outcome.log ? `${effect(model, nd.t.weight)} /unit` : `w ${fmt(nd.t.weight)}`;
       else label = `Δ ${model.outcome.log ? effect(model, nd.imp) : fmt(nd.imp)} · ${nd.t.values.length} values`;
       pill(ctx, label, lx, ly, labelColor, c);
     }
@@ -187,8 +187,8 @@ export function createGraph(canvas, tooltip) {
         R² ${fmt(m.r2Before)} → ${fmt(m.r2After)} <span class="muted">(left-out check)</span>`;
     }
     if (t.kind === 'number') {
-      return `<strong>${esc(t.name)}</strong> <span class="muted">number</span><br>
-        weight: <b>${model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</b> per unit<br>
+      return `<strong>${esc(t.name)}</strong> <span class="muted">number${t.log ? ', log scale' : ''}</span><br>
+        ${t.log ? `effect: <b>${perTenPct(model, t)}</b> at any size` : `weight: <b>${model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</b> per unit`}<br>
         range: ${fmt(t.min)} – ${fmt(t.max)}<br>
         effect across range: ${model.outcome.log ? effect(model, imp) : fmt(imp)}`;
     }

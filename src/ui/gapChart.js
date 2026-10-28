@@ -548,7 +548,8 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
         ${r.actual !== null ? `<tr><td>Actual</td><td>${fmt(r.actual)}</td></tr>` : ''}
         ${r.gap !== null ? `<tr><td>Gap</td><td>${r.gap >= 0 ? '+' : '−'}${fmt(Math.abs(r.gap))} (${pctText(r.gapPct)})</td></tr>` : ''}
       </table>
-      ${warn ? `<div class="warn">⚠ ${esc(missingText(r.imputed, r.missingLocation))}</div>` : ''}`;
+      ${warn ? `<div class="warn">⚠ ${esc(missingText(r.imputed, r.missingLocation))}</div>` : ''}
+      ${r.suspect?.length ? `<div class="warn">⚑ Left out of the gap figures: ${esc(r.suspect.join('; '))}</div>` : ''}`;
   }
 
   function hubTip(h) {
