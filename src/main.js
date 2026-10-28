@@ -155,9 +155,13 @@ function reconcileMapping() {
   const has = (c) => c === null || batch.columns.includes(c);
   const inputs = {};
   for (const name of Object.keys(fresh.inputs)) inputs[name] = name in mapping.inputs && has(mapping.inputs[name]) ? mapping.inputs[name] : fresh.inputs[name];
+  // The actual column follows the suggestion until the user picks one, so a
+  // better guess (or a retrain) can correct an earlier wrong one.
+  const picked = mapping.actualPicked && mapping.actual !== undefined && has(mapping.actual);
   return {
     inputs,
-    actual: mapping.actual !== undefined && has(mapping.actual) ? mapping.actual : fresh.actual,
+    actual: picked ? mapping.actual : fresh.actual,
+    ...(picked ? { actualPicked: true } : {}),
     label: mapping.label !== undefined && has(mapping.label) ? mapping.label : fresh.label,
   };
 }
@@ -213,6 +217,7 @@ function renderBatchViews() {
     onMapping(kind, term, column) {
       if (kind === 'input') state.mapping.inputs[term] = column;
       else state.mapping[kind] = column;
+      if (kind === 'actual') state.mapping.actualPicked = true;
       storage.saveBatchMapping(state.mapping);
       renderBatchSection();
     },

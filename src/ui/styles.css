@@ -269,6 +269,10 @@ table.weights tr.sub td:first-child { padding-left: 18px; color: var(--muted); }
 .mapping { margin: 8px 0; font-size: 13px; }
 .mapping summary { cursor: pointer; }
 .map-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 8px; align-items: center; margin-top: 8px; }
+.actual-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 8px 0; }
+.actual-pick label { font-weight: 600; }
+.actual-pick select { min-width: 0; max-width: 100%; }
+.actual-pick .small { margin: 0; flex-basis: 100%; }
 .map-grid label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-grid select { min-width: 0; font-size: 12px; }
 .map-head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }

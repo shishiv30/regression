@@ -10,7 +10,8 @@
 //    so colour is never the only cue.
 // Map and scatter zoom with the wheel and pan by dragging. Hovering a node
 // shows its labels (fields marked Label) and numbers, and highlights the
-// records it is linked with.
+// records it is linked with. Clicking a node pins it: it and every record
+// linked with it get a tag on the canvas with estimate, actual and gap.
 import { fmt, signed, esc, missingText, confidenceBadge, rangeText } from './format.js';
 import { toNumber } from '../calc/schema.js';
 
@@ -72,7 +73,10 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
   let rows = []; // list layout
   let geom = null;
   let hover = null; // { node } | { hub }
+  let pinned = null; // the clicked record (a result); its link group is tagged
+  let pinNode = null; // pinned's node in this draw, if shown
   let drag = null;
+  let dragged = false; // the last press panned, so it is no click
   let origin = [0, 0]; // the screen point zoom scales around
 
   const layoutButtons = [...bar.querySelectorAll('[data-layout]')];
@@ -125,12 +129,21 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     hover = null;
   }
 
+  // Scatter and list plot only compared rows: ones left out of the gap
+  // figures (⚑, e.g. an actual far out of line) would stretch the axes and
+  // squeeze every other record into a corner. The map and data table keep them.
+  const compared = (r) => r.gap !== null && !r.suspect?.length;
+  const screenedNote = () => {
+    const n = data.results.filter((r) => r.gap !== null && r.suspect?.length).length;
+    return n ? ` · ${n} ⚑ left out (see Data table)` : '';
+  };
+
   // ---------- drawing ----------
   function draw() {
     const width = scroller.clientWidth;
     if (!width) return;
     const mode = current();
-    const listRows = mode === 'list' && data?.actualColumn ? data.results.filter((r) => r.gap !== null) : [];
+    const listRows = mode === 'list' && data?.actualColumn ? data.results.filter(compared) : [];
     const height = mode === 'list' ? Math.max(scroller.clientHeight, listRows.length ? HEAD + listRows.length * ROW + AXIS : 0) : scroller.clientHeight;
     const dpr = window.devicePixelRatio || 1;
     canvas.style.height = `${height}px`;
@@ -142,6 +155,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     nodes = [];
     hubs = [];
     rows = [];
+    pinNode = null;
     canvas.classList.toggle('pannable', mode !== 'list' && !!data);
     hint.textContent = '';
 
@@ -154,7 +168,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     };
     if (!data) return message(['Import a CSV under “Predict many records”', 'to compare estimates with real values.']);
     if (mode === 'map') return drawMap(width, height, c, message);
-    if (!data.actualColumn) return message(['Pick the “Actual value” column', 'in the right panel to see the gaps.']);
+    if (!data.actualColumn) return message(['Pick a “Compare with” column', 'under Predict many records to see the gaps.']);
     if (mode === 'scatter') return drawScatter(width, height, c, message);
     rows = listRows.sort((a, b) => (b.gapPct ?? 0) - (a.gapPct ?? 0));
     if (!rows.length) return message([`No row has both an estimate and a value in “${data.actualColumn}”.`]);
@@ -187,8 +201,8 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
   }
 
   const gapLegend = (c) => [
-    [(x, y) => node(x, y, 5, c.above, c), 'Actual above estimate'],
-    [(x, y) => node(x, y, 5, c.below, c), 'Below'],
+    [(x, y) => node(x, y, 5, c.above, c), 'Estimate too low (actual above)'],
+    [(x, y) => node(x, y, 5, c.below, c), 'Estimate too high'],
     [(x, y) => { node(x - 3, y, 2.5, c.muted, c); node(x + 5, y, 4.5, c.muted, c); }, 'Size = |gap|, up to 50%'],
   ];
 
@@ -206,7 +220,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     const items = [...(withActual ? gapLegend(c) : []), [(x, y) => ring(x, y, 4.5, c), 'No actual value']];
     if (linkBy) items.push([(x, y) => hub(x, y, c, false), `Same ${linkBy}`]);
     const top = header(c, `Estimate gaps on the map · ${data.outcomeName}`, `${placed.length} records${withActual ? ` · ${withActual} with ${data.actualColumn}` : ''}`, items, width);
-    hint.textContent = `Scroll to zoom · drag to pan · double-click to reset${noCoords ? ` · ${noCoords} record${noCoords > 1 ? 's' : ''} without coordinates not shown` : ''}`;
+    hint.textContent = `Scroll to zoom · drag to pan · click a record to tag its linked records · double-click to reset${noCoords ? ` · ${noCoords} record${noCoords > 1 ? 's' : ''} without coordinates not shown` : ''}`;
 
     // Equirectangular projection, fitted to the plot keeping distances true.
     const pad = 24;
@@ -225,23 +239,25 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
       const [sx, sy] = project(lat, lng);
       return { r, sx, sy, rad: r.gap === null ? 4.5 : radius(r), link: linkOf(r) };
     });
+    pinNode = nodes.find((n) => n.r === pinned) ?? null;
     buildHubs();
 
     clip(plot, () => {
       drawLinks(c, true);
-      for (const h of hubs) hub(h.sx, h.sy, c, hover && hubKey() === h.key);
+      for (const h of hubs) hub(h.sx, h.sy, c, hubKey() === h.key);
       drawNodes(c);
       hubLabels(c, plot);
     });
     scaleBar(c, plot, s * view.k);
+    drawTags(c, plot, width, height);
   }
 
   function drawScatter(width, height, c, message) {
-    const placed = data.results.filter((r) => r.gap !== null);
+    const placed = data.results.filter(compared);
     if (!placed.length) return message([`No row has both an estimate and a value in “${data.actualColumn}”.`]);
     const items = [...gapLegend(c), [(x, y) => dashed(x - 7, y + 4, x + 7, y - 4, c.muted), 'Exact']];
-    const top = header(c, `Estimated vs. actual ${data.outcomeName}`, `${placed.length} records with ${data.actualColumn}`, items, width);
-    hint.textContent = 'Scroll to zoom · drag to pan · double-click to reset';
+    const top = header(c, `Estimated vs. actual ${data.outcomeName}`, `${placed.length} records with ${data.actualColumn}${screenedNote()}`, items, width);
+    hint.textContent = 'Scroll to zoom · drag to pan · click a record to tag its linked records · double-click to reset';
 
     // One shared scale for both axes, so the diagonal is 45°; logarithmic
     // when the values are all above 0 and span 10× or more.
@@ -295,6 +311,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     ctx.restore();
 
     nodes = placed.map((r) => ({ r, sx: sx(r.actual), sy: sy(r.estimate), base: sy(r.actual), rad: radius(r), link: linkOf(r) }));
+    pinNode = nodes.find((n) => n.r === pinned) ?? null;
     clip(plot, () => {
       const a = vx(plot.x0), b = vx(plot.x1);
       dashed(sx(a), sy(a), sx(b), sy(b), c.muted);
@@ -303,6 +320,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
       drawLinks(c, false);
       drawNodes(c);
     });
+    drawTags(c, plot, width, height);
   }
 
   function drawList(width, c) {
@@ -314,7 +332,7 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     ctx.fillText(`Estimated vs. actual ${data.outcomeName}`, pad, 24);
     ctx.fillStyle = c.muted;
     ctx.font = '12px system-ui, sans-serif';
-    const sub = `${rows.length} records with ${data.actualColumn} · sorted by gap`;
+    const sub = `${rows.length} records with ${data.actualColumn} · sorted by gap${screenedNote()}`;
     ctx.fillText(sub, pad, 42);
 
     let lx = Math.max(pad + ctx.measureText(sub).width + 24, width - 500);
@@ -328,8 +346,8 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     if (lx + 480 <= width) {
       item((x, y) => ring(x, y, 5, c), 'Estimate');
       item((x, y) => node(x, y, 5.5, c.fg, c), 'Actual');
-      item((x, y) => line(x - 6, y, x + 6, y, c.above, 1, 3), 'Actual above estimate');
-      item((x, y) => line(x - 6, y, x + 6, y, c.below, 1, 3), 'Below');
+      item((x, y) => line(x - 6, y, x + 6, y, c.above, 1, 3), 'Estimate too low');
+      item((x, y) => line(x - 6, y, x + 6, y, c.below, 1, 3), 'Estimate too high');
     }
 
     const values = rows.flatMap((r) => [r.estimate, r.actual]);
@@ -383,9 +401,11 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     }
   }
 
-  const hubKey = () => (hover?.hub ? hover.hub.key : hover?.node?.link ?? null);
-  // Records outside the hovered link group fade back.
-  const dim = (n) => hover && hubKey() !== null && n.link !== hubKey() && n !== hover.node;
+  // A pinned record holds the focus; otherwise the hovered one does.
+  const focusNode = () => pinNode ?? hover?.node ?? null;
+  const hubKey = () => (pinNode ? pinNode.link : hover?.hub ? hover.hub.key : hover?.node?.link ?? null);
+  // Records outside the focused link group fade back.
+  const dim = (n) => hubKey() !== null && n.link !== hubKey() && n !== focusNode();
 
   // Map: every member to its hub. Scatter: only the hovered record's group,
   // drawn from that record (a centre means nothing on these axes).
@@ -397,28 +417,95 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
         const on = key === h.key;
         for (const n of h.members) line(h.sx, h.sy, n.sx, n.sy, on ? c.accent : c.muted, on ? 0.9 : key !== null ? 0.08 : 0.3, on ? 1.5 : 1);
       }
-    } else if (key !== null && hover.node) {
-      for (const n of nodes) if (n !== hover.node && n.link === key) line(hover.node.sx, hover.node.sy, n.sx, n.sy, c.accent, 0.6, 1);
+    } else if (key !== null && focusNode()) {
+      const f = focusNode();
+      for (const n of nodes) if (n !== f && n.link === key) line(f.sx, f.sy, n.sx, n.sy, c.accent, 0.6, 1);
     }
   }
 
   function drawNodes(c) {
-    // Big gaps last, so they sit on top; the hovered record over everything.
-    const order = [...nodes].sort((a, b) => a.rad - b.rad);
-    for (const n of order) {
+    // Big gaps last, so they sit on top (hit-testing uses the same order).
+    for (const n of drawOrder()) {
       ctx.globalAlpha = dim(n) ? 0.2 : 1;
       if (n.r.gap === null) ring(n.sx, n.sy, n.rad, c);
       else node(n.sx, n.sy, n.rad, n.r.gap >= 0 ? c.above : c.below, c);
     }
     ctx.globalAlpha = 1;
-    const h = hover?.node;
-    if (h) {
+    for (const [h, color] of [[pinNode, c.accent], [hover?.node, c.fg]]) {
+      if (!h) continue;
       ctx.beginPath();
       ctx.arc(h.sx, h.sy, h.rad + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = c.fg;
+      ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
+  }
+
+  // Tags for the pinned record and every record linked with it: estimate,
+  // actual and gap. Each goes beside its node where it overlaps no other tag;
+  // ones without room are counted in the hint (zoom in to see them).
+  function drawTags(c, plot, width, height) {
+    if (!pinNode) return;
+    const inPlot = (n) => n.sx >= plot.x0 && n.sx <= plot.x1 && n.sy >= plot.y0 && n.sy <= plot.y1;
+    const group = [pinNode, ...(pinNode.link === null ? [] : nodes.filter((n) => n !== pinNode && n.link === pinNode.link))];
+    const shown = group.filter(inPlot);
+    const placed = [];
+    let skipped = group.length - shown.length;
+    const LINE = 14, PAD = 6;
+    for (const n of shown) {
+      const r = n.r;
+      const lines = [
+        [r.label, '600'],
+        [`Est ${short(r.estimate)}`, '400'],
+        ...(r.actual !== null ? [[`Actual ${short(r.actual)}`, '400']] : []),
+        ...(r.gapPct !== null ? [[`Gap ${pctText(r.gapPct)}`, '600']] : []),
+      ];
+      ctx.font = '600 11px system-ui, sans-serif';
+      lines[0][0] = truncate(String(lines[0][0]), 130);
+      const w = Math.max(...lines.map(([t, wt]) => ((ctx.font = `${wt} 11px system-ui, sans-serif`), ctx.measureText(t).width))) + PAD * 2;
+      const h = lines.length * LINE + PAD;
+      const gap = n.rad + 6;
+      const spots = [
+        [n.sx + gap, n.sy - h / 2],
+        [n.sx - gap - w, n.sy - h / 2],
+        [n.sx - w / 2, n.sy - gap - h],
+        [n.sx - w / 2, n.sy + gap],
+        [n.sx + gap, n.sy - gap - h],
+        [n.sx + gap, n.sy + gap],
+        [n.sx - gap - w, n.sy - gap - h],
+        [n.sx - gap - w, n.sy + gap],
+      ];
+      const fits = ([x, y]) => x >= 2 && y >= plot.y0 - 8 && x + w <= width - 2 && y + h <= height - 2 &&
+        placed.every((b) => x + w < b.x || b.x + b.w < x || y + h < b.y || b.y + b.h < y);
+      const spot = spots.find(fits);
+      if (!spot) {
+        skipped++;
+        continue;
+      }
+      const [x, y] = spot;
+      placed.push({ x, y, w, h });
+      // Leader from the node's edge to the tag's nearest point.
+      const tx = Math.max(x, Math.min(n.sx, x + w)), ty = Math.max(y, Math.min(n.sy, y + h));
+      line(n.sx, n.sy, tx, ty, n === pinNode ? c.accent : c.muted, 0.8, 1);
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 4);
+      ctx.fillStyle = c.panel;
+      ctx.globalAlpha = 0.95;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = n === pinNode ? 2 : 1;
+      ctx.strokeStyle = n === pinNode ? c.accent : c.border;
+      ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      lines.forEach(([t, wt], i) => {
+        ctx.font = `${wt} 11px system-ui, sans-serif`;
+        ctx.fillStyle = i === 0 ? c.fg : i === lines.length - 1 && r.gapPct !== null ? c.fg : c.muted;
+        ctx.fillText(t, x + PAD, y + PAD / 2 + 2 + i * LINE);
+      });
+    }
+    const of = pinNode.link === null ? '' : ` · ${group.length} with ${linkBy} ${pinNode.link}`;
+    hint.textContent = `${hint.textContent} · tagged: ${pinNode.r.label}${of}${skipped ? ` · ${skipped} not tagged (no room or off screen; zoom in)` : ''} · click empty space or Esc to clear`;
   }
 
   // Hub names where there is room for them: few hubs, or zoomed in.
@@ -509,6 +596,11 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     ctx.strokeStyle = c.bg;
     ctx.stroke();
   }
+  // Compact numbers for tags: 1.23M, 845K.
+  function short(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    return Math.abs(v) >= 1000 ? v.toLocaleString(undefined, { notation: 'compact', maximumSignificantDigits: 3 }) : fmt(v);
+  }
   function truncate(text, max) {
     if (ctx.measureText(text).width <= max) return text;
     let s = text;
@@ -516,20 +608,37 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     return s + '…';
   }
 
+  // Nodes in paint order: the last one is on top.
+  const drawOrder = () => [...nodes].sort((a, b) => a.rad - b.rad);
+
   // ---------- hover, zoom and pan ----------
+  // The record whose dot is under the pointer is the one painted on top
+  // there, so the tooltip always describes the dot you see. Only off every
+  // dot does the nearest one within a few pixels count.
   function hitTest(px, py) {
     if (current() === 'list') {
       const i = geom ? Math.floor((py - geom.top) / ROW) : -1;
       return i >= 0 && i < rows.length ? { node: { r: rows[i] } } : null;
     }
     let best = null, bestD = Infinity;
-    for (const n of nodes) {
-      const d = Math.hypot(n.sx - px, n.sy - py);
-      if (d <= Math.max(n.rad + 3, 8) && d < bestD) [best, bestD] = [{ node: n }, d];
+    const order = drawOrder();
+    for (let i = order.length - 1; i >= 0; i--) {
+      const n = order[i];
+      if (Math.hypot(n.sx - px, n.sy - py) <= n.rad) {
+        best = { node: n };
+        bestD = 0;
+        break;
+      }
+    }
+    if (!best) {
+      for (const n of nodes) {
+        const d = Math.hypot(n.sx - px, n.sy - py);
+        if (d <= Math.max(n.rad + 3, 8) && d < bestD) [best, bestD] = [{ node: n }, d];
+      }
     }
     for (const h of hubs) {
       const d = Math.hypot(h.sx - px, h.sy - py);
-      if (d <= 8 && d < bestD) [best, bestD] = [{ hub: h }, d];
+      if (d <= (bestD === 0 ? 5 : 8) && d < (bestD || Infinity)) [best, bestD] = [{ hub: h }, d];
     }
     return best;
   }
@@ -546,7 +655,8 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
         ${r.low !== null ? `<tr><td>Likely range</td><td>${rangeText(r)}</td></tr>` : ''}
         ${r.locationAdj !== null ? `<tr><td>incl. location</td><td>${signed(r.locationAdj)}</td></tr>` : ''}
         ${r.actual !== null ? `<tr><td>Actual</td><td>${fmt(r.actual)}</td></tr>` : ''}
-        ${r.gap !== null ? `<tr><td>Gap</td><td>${r.gap >= 0 ? '+' : '−'}${fmt(Math.abs(r.gap))} (${pctText(r.gapPct)})</td></tr>` : ''}
+        ${r.gap !== null ? `<tr><td>Gap</td><td>${r.gap >= 0 ? '+' : '−'}${fmt(Math.abs(r.gap))} (${pctText(r.gapPct)}) · estimate too ${r.gap >= 0 ? 'low' : 'high'}</td></tr>` : ''}
+        ${r.actualNote ? `<tr><td>Actual</td><td class="muted">${esc(r.actualNote)}</td></tr>` : ''}
       </table>
       ${warn ? `<div class="warn">⚠ ${esc(missingText(r.imputed, r.missingLocation))}</div>` : ''}
       ${r.suspect?.length ? `<div class="warn">⚑ Left out of the gap figures: ${esc(r.suspect.join('; '))}</div>` : ''}`;
@@ -612,11 +722,28 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     if (!data || current() === 'list' || e.button !== 0) return;
     const [px, py] = local(e);
     drag = { px, py, vx: view.x, vy: view.y };
+    dragged = false;
     canvas.classList.add('panning');
   });
   window.addEventListener('mouseup', () => {
+    dragged = !!drag?.moved;
     drag = null;
     canvas.classList.remove('panning');
+  });
+  // Click a record to pin it (again to unpin); click empty space to clear.
+  canvas.addEventListener('click', (e) => {
+    if (!data || current() === 'list' || dragged) return;
+    const hit = hitTest(...local(e));
+    if (hit?.hub) return;
+    const r = hit?.node?.r ?? null;
+    pinned = r && r !== pinned ? r : null;
+    draw();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && pinned) {
+      pinned = null;
+      draw();
+    }
   });
   canvas.addEventListener('wheel', (e) => {
     if (!data || current() === 'list') return;
@@ -645,7 +772,10 @@ export function createGapChart({ canvas, scroller, bar, linkSelect, hint, toolti
     setData(d) {
       const fresh = d?.results !== data?.results;
       data = d;
-      if (fresh) resetView();
+      if (fresh) {
+        resetView();
+        pinned = null;
+      }
       renderBar();
       draw();
     },

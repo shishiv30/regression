@@ -50,6 +50,17 @@ describe('comparables scale by size, batch screen', () => {
     expect(out.summary.withActual).toBe(38);
     expect(out.results.slice(0, -2).every((r) => !r.suspect.length)).toBe(true);
   });
+
+  it('reads an actual of 0 as blank when every training value is above 0', () => {
+    const fresh = landData(10, 11);
+    const out = predictBatch(model, [{ ...fresh[0], price: '0' }, ...fresh.slice(1)], { inputs: { size: 'size', lat: 'lat', lng: 'lng' }, actual: 'price', label: null });
+    const [zero] = out.results;
+    expect(zero.actual).toBeNull();
+    expect(zero.gap).toBeNull();
+    expect(zero.actualNote).toMatch(/read as blank/);
+    expect(Number.isFinite(zero.estimate)).toBe(true);
+    expect(out.summary.withActual).toBe(9);
+  });
 });
 
 describe('ridge', () => {

@@ -32,6 +32,14 @@ describe('batch prediction (synthetic)', () => {
     expect(suggestMapping({ ...model, labels: ['kind'] }, ['a', 'kind', 'v2', 'tag'], rows).label).toBe('kind');
   });
 
+  it('does not take a code that sits inside the outcome range for the actual value', () => {
+    // A ZIP-like column lies wholly inside a price range but barely varies;
+    // the price column varies like the training prices, with a few outside.
+    const priced = { ...model, outcome: { name: 'closePrice', min: 50000, max: 9000000 } };
+    const rows = Array.from({ length: 200 }, (_, i) => ({ zip: String(95002 + (i % 140)), listPrice: String(i < 3 ? 12000000 : 300000 + 25000 * i) }));
+    expect(suggestMapping(priced, ['zip', 'listPrice'], rows).actual).toBe('listPrice');
+  });
+
   it('estimates every row, fills gaps with training averages and measures the gap', () => {
     const rows = [
       { a: '10', kind: 'y', sold: '200', id: 'A' }, // 100 + 20 + 50 = 170, gap +30

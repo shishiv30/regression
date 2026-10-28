@@ -23,8 +23,14 @@ export function renderBatch(el, { batch, model, mapping, output, scope, previous
     <p class="file-line"><b>${esc(fileName)}</b> · ${rows.length} records</p>
     ${scope ? `<div class="notice">Showing the ${output.results.length} of ${scope.total} rows with <b>${esc(scope.groupBy)}</b> = <b>${esc(scope.group)}</b>, the group selected on the left. Pick another group there to see its rows; the download has every row.</div>` : ''}
 
+    <div class="actual-pick">
+      <label for="map-actual">Compare with</label>
+      <select id="map-actual" data-kind="actual" title="The column holding the real ${esc(model.outcome.name)} of each row; estimates are measured against it">${opts(mapping.actual, '— none —')}</select>
+      <span class="muted small">${mapping.actualPicked ? (mapping.actual ? 'your pick' : 'none picked: estimates only, no gaps') : mapping.actual === model.outcome.name ? 'same name as the outcome' : mapping.actual ? `suggested: values most like ${esc(model.outcome.name)}` : `no column looks like ${esc(model.outcome.name)}; pick one to see gaps`}</span>
+    </div>
+
     ${groupInput && !mapping.inputs[groupInput.name] ? `<div class="notice">Pick the column that holds <b>${esc(groupInput.name)}</b>; each row is estimated with its group's formula.</div>` : ''}
-    <details class="mapping" ${unmapped.length || !mapping.actual || (groupInput && !mapping.inputs[groupInput.name]) ? 'open' : ''}>
+    <details class="mapping" ${unmapped.length || (groupInput && !mapping.inputs[groupInput.name]) ? 'open' : ''}>
       <summary>Column matching${unmapped.length ? ` · <span class="warn">${unmapped.length} input${unmapped.length > 1 ? 's' : ''} use the training average</span>` : ''}</summary>
       <div class="map-grid">
         <span class="map-head">Model input</span><span class="map-head">Read from column</span>
@@ -34,8 +40,6 @@ export function renderBatch(el, { batch, model, mapping, output, scope, previous
               <select id="map-${esc(t.name)}" data-kind="input" data-term="${esc(t.name)}">${opts(mapping.inputs[t.name], t.group ? '— none: no estimates —' : t.location ? '— none: no location adjustment —' : '— training average —')}</select>`,
           )
           .join('')}
-        <label for="map-actual"><b>Actual value</b></label>
-        <select id="map-actual" data-kind="actual">${opts(mapping.actual, '— none —')}</select>
         <label for="map-label">Row label</label>
         <select id="map-label" data-kind="label">${opts(mapping.label, '— row number —')}</select>
       </div>
@@ -67,7 +71,7 @@ export function renderBatch(el, { batch, model, mapping, output, scope, previous
     ${s.imputedRows ? `<p class="muted small"><span class="alert-icon">⚠</span> The record lacks a field the formula uses; the training average was used, or for missing latitude/longitude no location adjustment was made (hover for which). Fields the formula does not use are ignored.</p>` : ''}
     ${s.noEstimate ? `<p class="muted small"><span class="warn">no formula</span>: the row's group was skipped in training or never seen (hover for why).</p>` : ''}`;
 
-  el.querySelectorAll('.map-grid select').forEach((sel) =>
+  el.querySelectorAll('.map-grid select, #map-actual').forEach((sel) =>
     sel.addEventListener('change', () => onMapping(sel.dataset.kind, sel.dataset.term, sel.value || null)),
   );
   el.querySelector('#batch-download').addEventListener('click', onDownload);
@@ -117,7 +121,7 @@ function diagnosisHtml(d, s) {
 
 function summaryHtml(s, mapping, model) {
   if (!mapping.actual) {
-    return `<div class="notice">Pick the <b>Actual value</b> column to compare estimates with real ${esc(model.outcome.name)} values.</div>`;
+    return `<div class="notice">Pick the <b>Compare with</b> column above to compare estimates with real ${esc(model.outcome.name)} values.</div>`;
   }
   const noEstimate = s.noEstimate ? `<div class="notice">${s.noEstimate} row${s.noEstimate > 1 ? 's have' : ' has'} no formula for its group, so no estimate.</div>` : '';
   if (!s.withActual) {

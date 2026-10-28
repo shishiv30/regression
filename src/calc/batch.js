@@ -9,8 +9,10 @@ import { LEVELS } from './confidence.js';
 // Default mapping, by names the model knows and by the values in the file:
 //  · each model input reads the same-named column;
 //  · the actual value is the outcome's column, else the unused numeric column
-//    whose values fall inside the training outcome range most often (at
-//    least half), the closest to its middle on a tie;
+//    with at least half its values inside the training outcome range whose
+//    values look most like the outcome: middle and spread closest to the
+//    training range's (so a code such as a ZIP, which sits inside a price
+//    range but barely varies, is not taken for a price);
 //  · the row label is a field marked Label in training, else an unused text
 //    column with a different value on (nearly) every row.
 export function suggestMapping(model, columns, rows = []) {
@@ -29,15 +31,23 @@ export function suggestMapping(model, columns, rows = []) {
 
 function likeOutcome({ min, max }, columns, stats, rows) {
   const log = min > 0;
-  const mid = log ? Math.sqrt(min * max) : (min + max) / 2;
+  // Positions on the outcome's own scale: log when it is all above 0.
+  const at = (v) => (log ? Math.log(Math.max(v, min * 1e-6)) : v);
+  const lo = at(min), hi = at(max), span = hi - lo || 1;
   let best = null;
   for (const c of columns) {
     if (stats[c]?.type !== 'number') continue;
-    const vals = rows.map((r) => toNumber(r[c])).filter(Number.isFinite);
+    const vals = rows.map((r) => toNumber(r[c])).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!vals.length) continue;
     const inside = vals.filter((v) => v >= min && v <= max).length / vals.length;
-    const s = stats[c];
-    const off = log && s.median > 0 ? Math.abs(Math.log(s.median / mid)) : Math.abs(s.median - mid) / (max - min || 1);
-    if (inside >= 0.5 && (!best || inside > best.inside || (inside === best.inside && off < best.off))) best = { c, inside, off };
+    if (inside < 0.5) continue;
+    const q = (p) => at(vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]);
+    const off = Math.abs(q(0.5) - (lo + hi) / 2) / span;
+    // Its 5–95% spread against the training range, as a ratio (a column with
+    // no spread at all is the least like it).
+    const spread = Math.abs(Math.log(Math.max(q(0.95) - q(0.05), span * 1e-6) / span));
+    const score = off + spread + (1 - inside);
+    if (!best || score < best.score) best = { c, score };
   }
   return best?.c ?? null;
 }
@@ -85,8 +95,13 @@ function recordOf(model, formula, group, row, mapping) {
 export function predictBatch(model, rows, mapping) {
   const results = rows.map((row, index) => {
     const label = mapping.label && !isMissing(row[mapping.label]) ? String(row[mapping.label]) : `row ${index + 1}`;
-    const actual = mapping.actual ? toNumber(row[mapping.actual]) : NaN;
+    const raw = mapping.actual ? toNumber(row[mapping.actual]) : NaN;
+    // 0 or below where every training value is above 0 is a placeholder
+    // (e.g. "no price yet"), not a value to measure the estimate against.
+    const placeholder = Number.isFinite(raw) && raw <= 0 && model.outcome.min > 0;
+    const actual = placeholder ? NaN : raw;
     const has = Number.isFinite(actual);
+    const actualNote = placeholder ? `${row[mapping.actual]} read as blank: every training ${model.outcome.name} is above 0` : null;
 
     // A grouped model uses the formula of the row's group; with no formula
     // for that group the row gets no estimate (it is never guessed).
@@ -97,7 +112,7 @@ export function predictBatch(model, rows, mapping) {
       group = col && !isMissing(row[col]) ? String(row[col]).trim() : '';
       formula = resolveModel(model, group);
       if (!formula) {
-        return { index, label, group, estimate: null, actual: has ? actual : null, gap: null, gapPct: null, imputed: [], missingLocation: [], locationAdj: null, compsAdj: null, low: null, high: null, confidence: null, warnings: [], suspect: [], error: noGroupReason(model, group) };
+        return { index, label, group, estimate: null, actual: has ? actual : null, actualNote, gap: null, gapPct: null, imputed: [], missingLocation: [], locationAdj: null, compsAdj: null, low: null, high: null, confidence: null, warnings: [], suspect: [], error: noGroupReason(model, group) };
       }
     }
 
@@ -112,6 +127,7 @@ export function predictBatch(model, rows, mapping) {
       group,
       estimate: p.value,
       actual: has ? actual : null,
+      actualNote,
       gap,
       gapPct: has && actual !== 0 ? gap / actual : null,
       imputed,
@@ -349,7 +365,7 @@ export function resultsToCsv(columns, rows, results, outcomeName) {
         r.gap === null ? '' : r.gap.toFixed(2),
         r.gapPct === null ? '' : (r.gapPct * 100).toFixed(2),
         [...r.imputed, ...r.missingLocation].join(' '),
-        [r.error, ...(r.suspect ?? []).map((w) => `left out of gap figures: ${w}`)].filter(Boolean).join('; '),
+        [r.error, r.actualNote, ...(r.suspect ?? []).map((w) => `left out of gap figures: ${w}`)].filter(Boolean).join('; '),
       ];
     }),
   });
