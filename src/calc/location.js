@@ -4,6 +4,8 @@
 // residual of its K nearest training records: if the formula under-prices the
 // houses around it, it probably under-prices this one too.
 import { isMissing, toNumber } from './schema.js';
+import { toModel, toValue } from './outcome.js';
+import { median, errorRange, rangeMode, levelOf, scoreOf, LEVELS, MIN_LEVEL_RECORDS, blendEstimates, disagreement } from './confidence.js';
 
 export const DEFAULT_NEIGHBOURS = 10;
 // Candidate distance scales; training keeps the one that best predicts each
@@ -69,15 +71,52 @@ function blend(points, neighbours, scaleKm) {
 
 const round = (v, digits) => Math.round(v * 10 ** digits) / 10 ** digits;
 
+// Comparables: the k training records nearest to a point that are also
+// similar in size. Distance in km plus SIZE_KM per unit of |log size ratio|,
+// so a record half the size counts like one ~0.35 km further away.
+const SIZE_KM = 0.5;
+function comparables(points, lat, lng, size, k, skip = -1) {
+  const best = [];
+  const ls = Math.log(size);
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (i === skip || !(p[5] > 0) || !(p[3] > 0)) continue;
+    const d = distanceKm(lat, lng, p[0], p[1]);
+    const s = d + SIZE_KM * Math.abs(Math.log(p[5]) - ls);
+    if (best.length === k && s >= best[k - 1].s) continue;
+    let j = best.length < k ? best.length : k - 1;
+    while (j > 0 && best[j - 1].s > s) {
+      best[j] = best[j - 1];
+      j--;
+    }
+    best[j] = { i, d, s };
+  }
+  if (!best.length) return null;
+  // Value per size unit (as a log), its median and how much it varies.
+  const per = best.map(({ i }) => Math.log(points[i][3] / points[i][5]));
+  const mid = median(per);
+  return { value: Math.exp(mid) * size, spread: median(per.map((v) => Math.abs(v - mid))), near: best };
+}
+
 // rows: the records the formula was trained on; estimate(row) is the
-// formula's value for a row. Returns { location } or { skipped: reason }.
-export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbours = DEFAULT_NEIGHBOURS, rowIndex } = {}) {
-  const points = []; // [lat, lng, residual, actual, training row index]
+// formula's value for a row in model space (log(outcome) on a log scale).
+// outcome: the model's outcome ({ name, log, min }). size: the field
+// comparables are matched and priced by, or null for none.
+// holdout: records kept out of training (outliers); they only widen the ranges.
+// Returns { location } or { skipped: reason }.
+// unseen(row), when given, is the row's formula estimate from a fit that did
+// not see it; the left-out check uses it instead of estimate(row).
+export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbours = DEFAULT_NEIGHBOURS, rowIndex, size = null, holdout = [], unseen = estimate } = {}) {
+  const points = []; // [lat, lng, residual (model space), actual, training row index, size]
+  const source = []; // the row behind each point
   for (const row of rows) {
     const c = readCoords(row, lat, lng);
     if (!c) continue;
-    const actual = toNumber(row[outcome]);
-    points.push([round(c.lat, 6), round(c.lng, 6), actual - estimate(row), actual, rowIndex?.get(row) ?? -1]);
+    source.push(row);
+    const actual = toNumber(row[outcome.name]);
+    const p = [round(c.lat, 6), round(c.lng, 6), toModel(outcome, actual) - estimate(row), actual, rowIndex?.get(row) ?? -1];
+    if (size) p.push(toNumber(row[size]));
+    points.push(p);
   }
   if (points.length < MIN_POINTS) {
     return { skipped: `only ${points.length} records have a usable ${lat}/${lng} (needs ${MIN_POINTS})` };
@@ -97,12 +136,54 @@ export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbour
     if (!best || sse < best.sse) best = { scaleKm, sse, adj };
   }
 
+  // Fit figures in outcome units: formula alone, + location, + comparables,
+  // every record left out of its own neighbours.
   const actual = sample.map((i) => points[i][3]);
+  const formula = sample.map((i) => unseen(source[i]));
+  const before = formula.map((f) => toValue(outcome, f));
+  const after = formula.map((f, s) => toValue(outcome, f + best.adj[s]));
+  const comps = size ? sample.map((i) => comparables(points, points[i][0], points[i][1], points[i][5], k, i)) : null;
+  const usable = (s) => comps?.[s] && points[sample[s]][5] > 0;
+  const final = after.map((v, s) => (usable(s) ? blendEstimates(v, comps[s].value) : v));
   const mean = actual.reduce((a, b) => a + b, 0) / sample.length;
   const sst = actual.reduce((a, v) => a + (v - mean) ** 2, 0);
-  const sseBefore = sample.reduce((a, i) => a + points[i][2] ** 2, 0);
+  const sse = (est) => est.reduce((a, e, s) => a + (actual[s] - e) ** 2, 0);
   const sorted = [...best.adj].sort((a, b) => a - b);
   const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+
+  // How far off the final estimates were: overall, and per confidence level
+  // when there are comparables. Records left out as outliers count too: new
+  // records will include ones like them, and a range that ignores them is
+  // too narrow.
+  const mode = rangeMode(outcome);
+  const pairs = actual.map((a, s) => [a, final[s]]);
+  const signals = sample.map((_, s) => (usable(s) ? { disagree: disagreement(after[s], comps[s].value), spread: comps[s].spread } : null));
+  for (const row of holdout) {
+    const c = readCoords(row, lat, lng);
+    const a = toNumber(row[outcome.name]);
+    if (!c || !Number.isFinite(a)) continue;
+    const at = toValue(outcome, estimate(row) + blend(points, nearest(points, c.lat, c.lng, k), best.scaleKm));
+    const sz = size ? toNumber(row[size]) : NaN;
+    const cp = sz > 0 ? comparables(points, c.lat, c.lng, sz, k) : null;
+    pairs.push([a, cp ? blendEstimates(at, cp.value) : at]);
+    signals.push(cp ? { disagree: disagreement(at, cp.value), spread: cp.spread } : null);
+  }
+  const range = errorRange(pairs, mode, 'left-out');
+  let confidence = null;
+  if (comps) {
+    const known = signals.filter(Boolean);
+    if (known.length >= 3 * MIN_LEVEL_RECORDS) {
+      const thresholds = { disagree: median(known.map((x) => x.disagree)), spread: median(known.map((x) => x.spread)) };
+      const scores = known.map((x) => scoreOf(thresholds, x.disagree, x.spread)).sort((a, b) => a - b);
+      thresholds.high = scores[Math.floor(scores.length / 3)];
+      thresholds.low = scores[Math.floor((2 * scores.length) / 3)];
+      const levels = {};
+      for (const level of LEVELS) {
+        levels[level] = errorRange(pairs.filter((_, s) => signals[s] && levelOf(thresholds, signals[s].disagree, signals[s].spread) === level), mode, 'left-out');
+      }
+      confidence = { thresholds, levels };
+    }
+  }
 
   for (const p of points) {
     p[2] = round(p[2], 4);
@@ -115,22 +196,26 @@ export function buildLocation(rows, estimate, { lat, lng }, outcome, { neighbour
       neighbours: k,
       scaleKm: best.scaleKm,
       points,
-      // How far the adjustment typically moves an estimate (10th to 90th percentile).
+      // How far the adjustment typically moves an estimate in model space (10th to 90th percentile).
       spread: q(0.9) - q(0.1),
-      metrics: locationMetrics({ n: sample.length, mean, sst, sseBefore, sseAfter: best.sse }),
+      size,
+      range,
+      confidence,
+      metrics: locationMetrics({ n: sample.length, mean, sst, sseBefore: sse(before), sseAfter: sse(after), ...(comps ? { sseComps: sse(final) } : {}) }),
     },
   };
 }
 
 // R² and RMSE of the formula alone vs. formula + location, from sums that can
 // be combined across groups.
-export function locationMetrics({ n, mean, sst, sseBefore, sseAfter }) {
+export function locationMetrics({ n, mean, sst, sseBefore, sseAfter, sseComps }) {
   return {
     n, mean, sst, sseBefore, sseAfter,
     r2Before: sst > 0 ? 1 - sseBefore / sst : NaN,
     r2After: sst > 0 ? 1 - sseAfter / sst : NaN,
     rmseBefore: Math.sqrt(sseBefore / n),
     rmseAfter: Math.sqrt(sseAfter / n),
+    ...(sseComps === undefined ? {} : { sseComps, r2Comps: sst > 0 ? 1 - sseComps / sst : NaN, rmseComps: Math.sqrt(sseComps / n) }),
   };
 }
 
@@ -145,6 +230,8 @@ export function combineLocationMetrics(list) {
     sst: list.reduce((a, m) => a + m.sst + m.n * (m.mean - mean) ** 2, 0),
     sseBefore: list.reduce((a, m) => a + m.sseBefore, 0),
     sseAfter: list.reduce((a, m) => a + m.sseAfter, 0),
+    // A group without comparables counts with its location-only error.
+    ...(list.some((m) => m.sseComps !== undefined) ? { sseComps: list.reduce((a, m) => a + (m.sseComps ?? m.sseAfter), 0) } : {}),
   });
 }
 
@@ -213,6 +300,25 @@ function nearestAll(pts, m) {
     out[i] = best.map((b) => b.j);
   }
   return out;
+}
+
+// The comparables estimate for one record: the median value per size unit of
+// its nearest similar-sized training records, times its size. Null without
+// comparables, usable coordinates or a positive size.
+export function comparablesEffect(location, record) {
+  if (!location.size) return null;
+  const c = readCoords(record, location.lat, location.lng);
+  const size = toNumber(record[location.size]);
+  if (!c || !(size > 0)) return null;
+  const comps = comparables(location.points, c.lat, c.lng, size, location.neighbours);
+  if (!comps) return null;
+  const { points } = location;
+  return {
+    value: comps.value,
+    spread: comps.spread,
+    size,
+    neighbours: comps.near.map(({ i, d }) => ({ distanceKm: d, actual: points[i][3], size: points[i][5], row: points[i][4] })),
+  };
 }
 
 // The adjustment for one record, with the neighbours behind it.

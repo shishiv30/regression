@@ -10,8 +10,10 @@ import {
   resolveModel,
   suggestMapping,
   predictBatch,
+  summarizeResults,
   resultsToCsv,
   modelLocation,
+  detectCoords,
   DEFAULT_NEIGHBOURS,
   DEFAULT_OUTLIER_CUTOFF,
   storage,
@@ -26,7 +28,7 @@ import { createGroupGraphs } from './ui/groupGraphs.js';
 import { esc } from './ui/format.js';
 
 const $ = (sel) => document.querySelector(sel);
-const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS, outlierCutoff: DEFAULT_OUTLIER_CUTOFF };
+const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS, outlierCutoff: DEFAULT_OUTLIER_CUTOFF, logOutcome: 'auto', compsBy: 'auto', missing: 'drop' };
 
 const state = {
   dataset: null,
@@ -41,7 +43,7 @@ const state = {
 };
 
 const graph = createGraph($('#graph'), $('#tooltip'));
-const gapChart = createGapChart($('#gap'), $('#view-gap'), $('#tooltip'));
+const gapChart = createGapChart({ canvas: $('#gap'), scroller: $('#gap-scroll'), bar: $('#gap-bar'), linkSelect: $('#gap-link'), hint: $('#gap-hint'), tooltip: $('#tooltip') });
 const dataTable = createDataTable($('#view-table'));
 const groupGraphs = createGroupGraphs($('#group-graphs'), $('#tooltip'), { onGroup: (g) => selectGroup(g) });
 
@@ -77,6 +79,7 @@ function shownModel() {
 function selectGroup(group) {
   state.selectedGroup = group;
   renderModelViews();
+  renderBatchViews();
 }
 
 // Report, prediction form and weight graph for the shown formula.
@@ -113,7 +116,14 @@ function renderAll() {
   $('#optimizer').value = config.optimizer;
   $('#neighbours').value = config.neighbours;
   $('#outliers').value = String(config.outlierCutoff);
-  $('#neighbours-ctl').hidden = !Object.values(config.roles).includes('lat');
+  $('#missing').value = config.missing === 'median' ? 'median' : 'drop';
+  $('#log-outcome').value = config.logOutcome === true ? 'log' : config.logOutcome === false ? 'linear' : 'auto';
+  const located = Object.values(config.roles).includes('lat');
+  $('#neighbours-ctl').hidden = !located;
+  $('#comps-ctl').hidden = !located;
+  const sizes = Object.keys(state.stats).filter((c) => state.stats[c].type === 'number' && state.stats[c].min > 0 && ['input', 'ignore', undefined].includes(config.roles[c]));
+  $('#comps').innerHTML = ['<option value="">Off</option>', '<option value="auto">Auto</option>', ...sizes.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`)].join('');
+  $('#comps').value = config.compsBy && (config.compsBy === 'auto' || sizes.includes(config.compsBy)) ? config.compsBy : config.compsBy ? 'auto' : '';
   renderTrainButton();
   renderModelViews();
   renderBatchSection();
@@ -130,7 +140,7 @@ function setView(view) {
 // Keep the user's column choices across retraining; suggest for new inputs.
 function reconcileMapping() {
   const { model, batch, mapping } = state;
-  const fresh = suggestMapping(model, batch.columns);
+  const fresh = suggestMapping(model, batch.columns, batch.rows);
   if (!mapping) return fresh;
   const has = (c) => c === null || batch.columns.includes(c);
   const inputs = {};
@@ -145,14 +155,31 @@ function reconcileMapping() {
 function renderBatchSection() {
   const { model, batch } = state;
   if (!model || !batch) {
+    state.batchOutput = null;
     renderBatch($('#batch'), {});
     gapChart.setData(null);
     dataTable.setData(null);
     return;
   }
   state.mapping = reconcileMapping();
-  const output = predictBatch(model, batch.rows, state.mapping);
-  renderBatch($('#batch'), { batch, model, mapping: state.mapping, output }, {
+  state.batchOutput = predictBatch(model, batch.rows, state.mapping);
+  renderBatchViews();
+}
+
+// For a grouped model, the gap chart, data table and batch summary show only
+// the rows of the selected group; the download keeps every row.
+function renderBatchViews() {
+  const { model, batch, batchOutput: output } = state;
+  if (!model || !batch || !output) return;
+  let group = null;
+  if (isGrouped(model)) {
+    shownModel(); // makes sure a group with a formula is selected
+    group = state.selectedGroup;
+  }
+  const results = group === null ? output.results : output.results.filter((r) => r.group === group);
+  const shown = group === null ? output : { results, summary: summarizeResults(results) };
+  const scope = group === null ? null : { groupBy: model.groupBy, group, total: output.results.length };
+  renderBatch($('#batch'), { batch, model, mapping: state.mapping, output: shown, scope }, {
     onMapping(kind, term, column) {
       if (kind === 'input') state.mapping.inputs[term] = column;
       else state.mapping[kind] = column;
@@ -168,16 +195,36 @@ function renderBatchSection() {
       URL.revokeObjectURL(a.href);
     },
   });
-  gapChart.setData({ results: output.results, outcomeName: model.outcome.name, actualColumn: state.mapping.actual });
   const loc = modelLocation(model);
+  gapChart.setData(gapData(batch, results, model, loc));
   dataTable.setData({
     batch,
-    results: output.results,
+    results,
     mapping: state.mapping,
     outcomeName: model.outcome.name,
     groupBy: model.groupBy ?? null,
     locationFields: loc ? [loc.lat, loc.lng] : [],
   });
+}
+
+// What the gap chart needs besides the results: where each batch row is (the
+// model's coordinate columns, else a pair whose values look like
+// coordinates), the fields marked Label in training (shown on hover) and a
+// column to link records by: the enum input with the most values that still
+// average 2+ training records each (an area-like field). Not the group-by:
+// the chart shows one group at a time, so it would link every record.
+function gapData(batch, results, model, loc) {
+  const { columns } = batch;
+  const mapped = loc && { lat: state.mapping.inputs[loc.lat], lng: state.mapping.inputs[loc.lng] };
+  const found = mapped?.lat && mapped?.lng ? null : detectCoords(columns, analyzeColumns(columns, batch.rows));
+  const coords = mapped?.lat && mapped?.lng ? mapped : found?.lat ? found : null;
+  const labelFields = (model.labels ?? []).filter((c) => columns.includes(c));
+  const formulas = isGrouped(model) ? Object.values(model.groups) : [model];
+  const enums = formulas
+    .flatMap((f) => f.terms.filter((t) => t.kind === 'enum' && t.values.length * 2 <= f.training.rowsUsed && state.mapping.inputs[t.name]))
+    .sort((a, b) => b.values.length - a.values.length);
+  const linkBy = (enums[0] && state.mapping.inputs[enums[0].name]) ?? null;
+  return { results, rows: batch.rows, columns, outcomeName: model.outcome.name, actualColumn: state.mapping.actual, labelColumn: state.mapping.label, coords, labelFields, linkBy };
 }
 
 function importBatchText(text, fileName) {
@@ -211,19 +258,25 @@ function renderTrainButton() {
 
 function onFieldChange(col, key, value) {
   const { config } = state;
-  if (key === 'role') {
-    // Only one outcome, latitude and longitude: demote the previous one.
-    if (value === 'outcome' || value === 'lat' || value === 'lng') {
-      for (const c of Object.keys(config.roles)) if (config.roles[c] === value) config.roles[c] = 'ignore';
-    }
-    config.roles[col] = value;
-    if (value === 'outcome' && config.groupBy === col) config.groupBy = null;
-  } else if (key === 'groupBy') {
+  if (key === 'groupBy') {
     config.groupBy = value ? col : null;
   } else {
-    config.types[col] = value;
-    state.stats = analyzeColumns(state.dataset.columns, state.dataset.rows, config.types);
-    if (config.groupBy === col && value !== 'enum') config.groupBy = null;
+    // value is a kind from the field dropdown: number / enum (inputs), outcome,
+    // lat, lng, label or ignore.
+    const role = value === 'number' || value === 'enum' ? 'input' : value;
+    // Only one outcome, latitude and longitude: demote the previous one.
+    if (role === 'outcome' || role === 'lat' || role === 'lng') {
+      for (const c of Object.keys(config.roles)) if (config.roles[c] === role) config.roles[c] = 'ignore';
+    }
+    config.roles[col] = role;
+    // Enum is forced; the numeric uses read the column as a number again.
+    const type = value === 'enum' ? 'enum' : ['number', 'outcome', 'lat', 'lng'].includes(value) ? undefined : config.types[col];
+    if (type !== config.types[col]) {
+      if (type) config.types[col] = type;
+      else delete config.types[col];
+      state.stats = analyzeColumns(state.dataset.columns, state.dataset.rows, config.types);
+    }
+    if (config.groupBy === col && (state.stats[col].type !== 'enum' || role === 'outcome')) config.groupBy = null;
   }
   persistConfig();
   renderAll();
@@ -240,6 +293,9 @@ async function onTrain() {
   config.optimizer = $('#optimizer').value;
   config.neighbours = Math.max(1, Math.min(100, Math.round(Number($('#neighbours').value) || DEFAULTS.neighbours)));
   config.outlierCutoff = Number($('#outliers').value) || 0;
+  config.logOutcome = { auto: 'auto', linear: false, log: true }[$('#log-outcome').value];
+  config.compsBy = $('#comps').value || null;
+  config.missing = $('#missing').value;
   persistConfig();
 
   state.training = true;

@@ -195,18 +195,17 @@ function save(file, { title, description, columns, rows, truth, eol = '\n' }) {
   });
 }
 
-// 8. Real Austin listings (checked in under test/): train on the for-sale
-//    file, then batch-predict the sold file and compare with closePrice.
-//    No known formula, so no `truth`.
+// 8. Real San Jose listings (kept by hand in public/test-data/): train on the
+//    sold file, then batch-predict the for-sale file and compare with
+//    listPrice. No known formula, so no `truth`. Only counted, not rewritten.
 for (const [src, title, description] of [
-  ['test-austin-training-data.csv', 'Austin for-sale listings (training)', 'Real for-sale listings. Train with listPrice as the outcome.'],
-  ['test-austin-verify-data.csv', 'Austin sold listings (verify)', 'Real sold listings. Use under "Predict many records" with closePrice as the actual value.'],
+  ['test-san-jose-training-data.csv', 'San Jose sold listings (training)', 'Real sold listings with coordinates. Train with closePrice as the outcome.'],
+  ['test-san-jose-verify-data.csv', 'San Jose for-sale listings (verify)', 'Real for-sale listings. Use under "Predict many records" with listPrice as the actual value.'],
 ]) {
-  const text = readFileSync(new URL(`../test/${src}`, import.meta.url), 'utf8');
-  writeFileSync(new URL(src, OUT), text);
+  const text = readFileSync(new URL(src, OUT), 'utf8');
   const rows = text.split(/\r?\n/).filter((l) => l.trim()).length - 1;
   index.push({ file: src, title, description, rows, truth: null });
-  console.log(`${src.padEnd(26)} ${String(rows).padStart(7)} rows  (copied)`);
+  console.log(`${src.padEnd(32)} ${String(rows).padStart(7)} rows  (counted)`);
 }
 
 writeFileSync(new URL('index.json', OUT), JSON.stringify(index, null, 2) + '\n');

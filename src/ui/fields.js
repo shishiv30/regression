@@ -1,10 +1,15 @@
-// Top bar: one card per CSV column to pick its role and type, showing the
-// numeric range or the full enum dictionary.
+// Top bar: one card per CSV column to pick what it is (a number or enum
+// input, the outcome, a coordinate, a label or ignored), showing the numeric
+// range or the full enum dictionary.
 import { fmt, esc } from './format.js';
+
+// One dropdown covers both the role and the type: inputs are trained on as a
+// number or an enum; a label is never trained on, only shown on hover.
+export const kindOf = (role, type) => (role === 'input' ? type : role || 'ignore');
 
 export function renderFields(el, { dataset, stats, config }, onChange) {
   if (!dataset) {
-    el.innerHTML = '<p class="muted hint">Import a CSV of real records. Each column becomes a field you can mark as an input (x) or the outcome (y).</p>';
+    el.innerHTML = '<p class="muted hint">Import a CSV of real records. Each column becomes a field you can mark as an input (x), the outcome (y), a coordinate or a label.</p>';
     return;
   }
   el.replaceChildren(
@@ -14,6 +19,7 @@ export function renderFields(el, { dataset, stats, config }, onChange) {
       const grouped = config.groupBy === col;
       const card = document.createElement('div');
       card.className = `field role-${grouped ? 'group' : role === 'lat' || role === 'lng' ? 'location' : role}`;
+      const num = s.numericOk ? '' : 'disabled';
 
       const error = role === 'outcome' && s.type !== 'number'
         ? '<div class="field-error">Outcome must be numeric</div>'
@@ -26,16 +32,14 @@ export function renderFields(el, { dataset, stats, config }, onChange) {
       card.innerHTML = `
         <div class="field-name" title="${esc(col)}">${esc(col)}</div>
         <div class="field-controls">
-          <select data-k="role" aria-label="Role of ${esc(col)}" ${grouped ? 'disabled title="Grouped: one formula per value instead of an input"' : ''}>
+          <select data-k="kind" aria-label="Use of ${esc(col)}" ${grouped ? 'disabled title="Grouped: one formula per value instead of an input"' : ''}>
+            <option value="number" ${num}>Number (x)</option>
+            <option value="enum">Enum (x)</option>
+            <option value="outcome" ${num}>Outcome (y)</option>
+            <option value="lat" ${num}>Latitude</option>
+            <option value="lng" ${num}>Longitude</option>
+            <option value="label" title="Not trained on; shown when hovering a record">Label</option>
             <option value="ignore">Ignore</option>
-            <option value="input">Input (x)</option>
-            <option value="outcome">Outcome (y)</option>
-            <option value="lat" ${s.type === 'number' ? '' : 'disabled'}>Latitude</option>
-            <option value="lng" ${s.type === 'number' ? '' : 'disabled'}>Longitude</option>
-          </select>
-          <select data-k="type" aria-label="Type of ${esc(col)}">
-            <option value="number" ${s.numericOk ? '' : 'disabled'}>Number</option>
-            <option value="enum">Enum</option>
           </select>
         </div>
         ${
@@ -47,11 +51,9 @@ export function renderFields(el, { dataset, stats, config }, onChange) {
         }
         <div class="field-summary">${summary(s)}</div>
         ${error}`;
-      card.querySelector('[data-k=role]').value = role;
-      card.querySelector('[data-k=type]').value = s.type;
-      card.querySelectorAll('select').forEach((sel) =>
-        sel.addEventListener('change', () => onChange(col, sel.dataset.k, sel.value)),
-      );
+      const sel = card.querySelector('[data-k=kind]');
+      sel.value = kindOf(role, s.type);
+      sel.addEventListener('change', () => onChange(col, 'kind', sel.value));
       card.querySelector('[data-k=groupBy]')?.addEventListener('change', (e) => onChange(col, 'groupBy', e.target.checked));
       return card;
     }),

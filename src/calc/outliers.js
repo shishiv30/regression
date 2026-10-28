@@ -55,6 +55,20 @@ export function leastSquares(X, y, keep = X.map((_, i) => i)) {
   return { weights: Array.from(w.subarray(0, d - 1)), bias: w[d - 1] };
 }
 
+// Each row's estimate from a fit that did not see it (k-fold). Used to
+// measure honest errors for the likely ranges.
+export function crossFitted(X, y, folds = 5) {
+  const out = new Array(X.length).fill(NaN);
+  for (let f = 0; f < folds; f++) {
+    const keep = [];
+    for (let i = 0; i < X.length; i++) if (i % folds !== f) keep.push(i);
+    if (keep.length < 2) continue;
+    const { weights, bias } = leastSquares(X, y, keep);
+    for (let i = f; i < X.length; i += folds) out[i] = X[i].reduce((a, v, j) => a + v * weights[j], bias);
+  }
+  return out;
+}
+
 // X, y: the encoded training data. Returns the indexes of outlier rows, each
 // with its screening-fit estimate and robust z-score (most extreme first).
 // local(residuals, keptIndexes), when given, is the residual each row's

@@ -18,7 +18,7 @@ describe('schema', () => {
 
   it('suggests roles and validates config', () => {
     const roles = suggestRoles(columns, stats);
-    expect(roles).toMatchObject({ id: 'ignore', price: 'outcome', sqft: 'input', neighborhood: 'input' });
+    expect(roles).toMatchObject({ id: 'label', price: 'outcome', sqft: 'input', neighborhood: 'input' });
     expect(validateConfig(stats, { roles })).toBeNull();
     expect(validateConfig(stats, { roles: { ...roles, price: 'input' } })).toMatch(/outcome/);
   });
@@ -38,6 +38,8 @@ describe('training', () => {
     const model = await trainModel(rows, stats, { roles, steps: 3000, learningRate: 0.05, optimizer: 'adam' });
 
     const t = Object.fromEntries(model.terms.map((x) => [x.name, x]));
+    // The id column is a label: shown on hover, never an input.
+    expect(t.id).toBeUndefined();
     expect(t.sqft.weight).toBeCloseTo(150, -1);
     expect(t.bedrooms.weight).toBeGreaterThan(7000);
     expect(t.bedrooms.weight).toBeLessThan(13000);

@@ -4,8 +4,16 @@
 // Numbers are min-max scaled to [0, 1]; enums are one-hot encoded against a
 // baseline (the most frequent value), so each non-baseline value gets a weight
 // meaning "outcome shift vs. baseline". The outcome is min-max scaled too.
+//
+// A blank input drops the record, or with config.missing = 'median' is filled
+// with the training median (numbers) or the most common value (enums). A
+// record without an outcome is always dropped.
 import { isMissing, toNumber } from './schema.js';
-import { locationEffect } from './location.js';
+import { locationEffect, comparablesEffect } from './location.js';
+import { toModel, toValue } from './outcome.js';
+import { applyRange, blendEstimates, disagreement, levelOf, MIN_LEVEL_RECORDS } from './confidence.js';
+
+export { toModel, toValue };
 
 // The group-by field splits the data instead of being an input.
 const inputColumns = (stats, config) =>
@@ -34,7 +42,19 @@ export function validateConfig(stats, config) {
     const s = stats[c];
     if (s.type === 'enum' && s.values.length < 2) return `Input "${c}" has only one value; it cannot carry a weight.`;
   }
+  if (config.logOutcome === true && !(stats[outcomes[0]].min > 0)) return `Log scale needs every ${outcomes[0]} above 0.`;
   return null;
+}
+
+// Log scale: the formula estimates log(outcome), so each weight is a
+// percentage change. It suits prices and other values that span a wide range
+// and grow by percentages. 'auto' turns it on for an outcome that is always
+// positive and spans at least 10×.
+export function useLogOutcome(stats, config) {
+  const o = stats[Object.keys(config.roles).find((c) => config.roles[c] === 'outcome')];
+  if (!o || !(o.min > 0)) return false;
+  if (config.logOutcome === 'auto') return o.max / o.min >= 10;
+  return config.logOutcome === true;
 }
 
 export function buildSpec(stats, config) {
@@ -42,24 +62,35 @@ export function buildSpec(stats, config) {
   if (err) throw new Error(err);
   const cols = Object.keys(config.roles).filter((c) => stats[c]);
   const o = stats[cols.find((c) => config.roles[c] === 'outcome')];
+  const fill = config.missing === 'median';
   const inputs = inputColumns(stats, config)
     .map((c) => {
       const s = stats[c];
       if (s.type === 'number') {
-        return { name: c, kind: 'number', min: s.min, max: s.max, mean: s.mean, scale: s.max - s.min || 1 };
+        return { name: c, kind: 'number', min: s.min, max: s.max, mean: s.mean, scale: s.max - s.min || 1, ...(fill && { fill: s.median }) };
       }
       const [baseline, ...levels] = s.values;
       const freq = Object.fromEntries(s.values.map((v) => [v, s.counts[v] / s.count]));
-      return { name: c, kind: 'enum', baseline, levels, values: s.values, freq };
+      return { name: c, kind: 'enum', baseline, levels, values: s.values, freq, ...(fill && { fill: baseline }) };
     });
-  return { outcome: { name: o.name, min: o.min, max: o.max, scale: o.max - o.min || 1 }, inputs };
+  // min/max stay in outcome units; offset/scale map the training target
+  // (log(outcome) on a log scale) to [0, 1].
+  const log = useLogOutcome(stats, config);
+  const lo = log ? Math.log(o.min) : o.min, hi = log ? Math.log(o.max) : o.max;
+  return { outcome: { name: o.name, min: o.min, max: o.max, log, offset: lo, scale: hi - lo || 1 }, inputs };
 }
 
-function encodeInputs(row, spec) {
+// Null when the record cannot be used; `filled` collects the names of blank
+// inputs that took their fill value.
+function encodeInputs(row, spec, filled) {
   const x = [];
   for (const inp of spec.inputs) {
-    const raw = row[inp.name];
-    if (isMissing(raw)) return null;
+    let raw = row[inp.name];
+    if (isMissing(raw)) {
+      if (inp.fill === undefined) return null;
+      raw = inp.fill;
+      filled.push(inp.name);
+    }
     if (inp.kind === 'number') {
       const v = toNumber(raw);
       if (!Number.isFinite(v)) return null;
@@ -72,38 +103,45 @@ function encodeInputs(row, spec) {
   return x;
 }
 
-// Rows with a missing / invalid value in any selected field are dropped.
+// Rows with a missing / invalid value in any selected field are dropped,
+// unless the spec fills blank inputs. filled = rows that had one filled.
 export function encodeDataset(rows, spec) {
   const X = [], y = [], used = [];
+  let filled = 0;
   for (const row of rows) {
-    const x = encodeInputs(row, spec);
+    const blanks = [];
+    const x = encodeInputs(row, spec, blanks);
     const t = toNumber(row[spec.outcome.name]);
-    if (!x || !Number.isFinite(t)) continue;
+    if (!x || !Number.isFinite(t) || (spec.outcome.log && !(t > 0))) continue;
     X.push(x);
-    y.push((t - spec.outcome.min) / spec.outcome.scale);
+    y.push((toModel(spec.outcome, t) - spec.outcome.offset) / spec.outcome.scale);
     used.push(row);
+    if (blanks.length) filled++;
   }
   if (used.length < 2) throw new Error('Fewer than 2 complete records for the selected fields.');
-  return { X, y, used, dropped: rows.length - used.length };
+  return { X, y, used, dropped: rows.length - used.length, filled };
 }
 
 // Convert normalised weights/bias into a plain-JSON model in original units:
 //   outcome = intercept + Σ weight·x (numbers) + Σ weights[value] (enums)
+// On a log scale the right-hand side is log(outcome), so a weight w means
+// "× e^w per unit" (about w·100 % for small w).
 export function buildModel(spec, { weights, bias }) {
   const ys = spec.outcome.scale;
-  let intercept = spec.outcome.min + ys * bias;
+  let intercept = spec.outcome.offset + ys * bias;
   let k = 0;
   const terms = spec.inputs.map((inp) => {
     if (inp.kind === 'number') {
       const weight = (ys * weights[k++]) / inp.scale;
       intercept -= weight * inp.min;
-      return { name: inp.name, kind: 'number', weight, min: inp.min, max: inp.max, mean: inp.mean };
+      return { name: inp.name, kind: 'number', weight, min: inp.min, max: inp.max, mean: inp.mean, ...('fill' in inp && { fill: inp.fill }) };
     }
     const w = { [inp.baseline]: 0 };
     for (const lvl of inp.levels) w[lvl] = ys * weights[k++];
-    return { name: inp.name, kind: 'enum', baseline: inp.baseline, values: inp.values, weights: w, freq: inp.freq };
+    return { name: inp.name, kind: 'enum', baseline: inp.baseline, values: inp.values, weights: w, freq: inp.freq, ...('fill' in inp && { fill: inp.fill }) };
   });
-  return { outcome: { ...spec.outcome }, intercept, terms };
+  const { name, min, max, log } = spec.outcome;
+  return { outcome: { name, min, max, log }, intercept, terms };
 }
 
 // Effect size in outcome units: how much the term can move the outcome across
@@ -155,11 +193,16 @@ export function modelLocation(model) {
 export function modelInputs(model) {
   const loc = modelLocation(model);
   const coords = loc ? [{ name: loc.lat, kind: 'number', location: true }, { name: loc.lng, kind: 'number', location: true }] : [];
-  if (!isGrouped(model)) return [...model.terms, ...coords];
+  // A comparables size field that is not also a formula input.
+  const sizes = (terms, formulas) => {
+    const names = new Set(terms.map((t) => t.name));
+    return [...new Set(formulas.map((f) => f.location?.size).filter((s) => s && !names.has(s)))].map((name) => ({ name, kind: 'number', comps: true }));
+  };
+  if (!isGrouped(model)) return [...model.terms, ...coords, ...sizes(model.terms, [model])];
   const seen = new Map();
   for (const g of Object.values(model.groups)) for (const t of g.terms) if (!seen.has(t.name)) seen.set(t.name, t);
   const values = [...Object.keys(model.groups), ...model.skipped.map((s) => s.value)];
-  return [{ name: model.groupBy, kind: 'enum', values, baseline: values[0], group: true }, ...seen.values(), ...coords];
+  return [{ name: model.groupBy, kind: 'enum', values, baseline: values[0], group: true }, ...seen.values(), ...coords, ...sizes([...seen.values()], Object.values(model.groups))];
 }
 
 // record: { [fieldName]: string | number }
@@ -176,13 +219,20 @@ export function predict(model, record, opts = {}) {
     if (!sub) throw new Error(noGroupReason(model, group));
     return { ...predict(sub, record, opts), group };
   }
-  let value = model.intercept;
-  let reference = model.intercept;
-  const contributions = [];
+  const o = model.outcome;
+  let lin = model.intercept; // model space
+  let ref = model.intercept;
+  const parts = [];
   const warnings = [];
+  const filled = [];
   for (const t of model.terms) {
-    const raw = record[t.name];
-    if (isMissing(raw)) throw new Error(`"${t.name}" is required.`);
+    let raw = record[t.name];
+    // A model trained with filled blanks fills them the same way here.
+    if (isMissing(raw)) {
+      if (t.fill === undefined) throw new Error(`"${t.name}" is required.`);
+      raw = t.fill;
+      filled.push(t.name);
+    }
     let c, input;
     if (t.kind === 'number') {
       input = toNumber(raw);
@@ -199,21 +249,67 @@ export function predict(model, record, opts = {}) {
       } else c = t.weights[input];
     }
     const avg = averageEffect(t);
-    value += c;
-    reference += avg;
-    contributions.push({ name: t.name, input, contribution: c - avg });
+    lin += c;
+    ref += avg;
+    parts.push({ name: t.name, input, lin: c - avg });
   }
   let location = null;
   if (model.location && opts.location !== false) {
     location = locationEffect(model.location, record);
     if (location) {
-      value += location.adjustment;
-      contributions.push({ name: 'location', input: `${location.lat}, ${location.lng}`, contribution: location.adjustment, location: true });
+      lin += location.adjustment;
+      parts.push({ name: 'location', input: `${location.lat}, ${location.lng}`, lin: location.adjustment, location: true });
     } else {
       warnings.push(`No usable ${model.location.lat}/${model.location.lng}, so no location adjustment.`);
     }
   }
-  return { value, reference, contributions, warnings, location };
+
+  // Parts in outcome units. On a log scale each part multiplies the running
+  // value, so its amount is taken in order; the parts still add up to the
+  // value, and `pct` is the part's own percentage effect.
+  const reference = toValue(o, ref);
+  let acc = ref, prev = reference;
+  const contributions = parts.map(({ lin: l, ...p }) => {
+    acc += l;
+    const cur = toValue(o, acc);
+    const c = { ...p, contribution: cur - prev, ...(o.log ? { pct: Math.exp(l) - 1 } : {}) };
+    prev = cur;
+    return c;
+  });
+  const formula = toValue(o, lin);
+  let value = formula;
+
+  // Comparables: blended in when the record has coordinates and a size.
+  let comps = null;
+  if (location && model.location.size) {
+    comps = comparablesEffect(model.location, record);
+    if (comps) {
+      value = blendEstimates(formula, comps.value);
+      contributions.push({ name: 'comparables', input: `${comps.neighbours.length} similar nearby`, contribution: value - formula, comps: true });
+    } else {
+      warnings.push(`No usable ${model.location.size}, so no comparables.`);
+    }
+  }
+  return { value, formula, reference, contributions, warnings, filled, location, comps, confidence: confidenceOf(model, value, formula, location, comps) };
+}
+
+// The likely range around an estimate and, with comparables, its confidence
+// level. Ranges come from left-out errors where there is a location, else
+// from the formula's training errors.
+function confidenceOf(model, value, formula, location, comps) {
+  const loc = model.location;
+  let range = model.range ?? null, level = null, source = 'training';
+  if (location && loc?.range) {
+    range = loc.range;
+    source = 'left-out';
+    if (comps && loc.confidence) {
+      level = levelOf(loc.confidence.thresholds, disagreement(formula, comps.value), comps.spread);
+      const own = loc.confidence.levels[level];
+      if (own?.n >= MIN_LEVEL_RECORDS) range = own;
+    }
+  }
+  const r = applyRange(range, value);
+  return r ? { level, ...r, medianApe: range.medianApe, source } : level ? { level, source } : null;
 }
 
 export function evaluate(model, rows) {

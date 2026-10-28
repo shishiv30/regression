@@ -202,17 +202,17 @@
     "truth": null
   },
   {
-    "file": "test-austin-training-data.csv",
-    "title": "Austin for-sale listings (training)",
-    "description": "Real for-sale listings. Train with listPrice as the outcome.",
-    "rows": 500,
+    "file": "test-san-jose-training-data.csv",
+    "title": "San Jose sold listings (training)",
+    "description": "Real sold listings with coordinates. Train with closePrice as the outcome.",
+    "rows": 4711,
     "truth": null
   },
   {
-    "file": "test-austin-verify-data.csv",
-    "title": "Austin sold listings (verify)",
-    "description": "Real sold listings. Use under \"Predict many records\" with closePrice as the actual value.",
-    "rows": 19,
+    "file": "test-san-jose-verify-data.csv",
+    "title": "San Jose for-sale listings (verify)",
+    "description": "Real for-sale listings. Use under \"Predict many records\" with listPrice as the actual value.",
+    "rows": 1655,
     "truth": null
   }
 ]

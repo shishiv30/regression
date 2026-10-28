@@ -21,7 +21,7 @@ export function createGroupGraphs(el, tooltip, { onGroup } = {}) {
       card.innerHTML = `
         <header title="Show this formula in the report and the predict form">
           <b>${esc(model.groupBy)} = ${esc(value)}</b>
-          <span class="muted">${g.training.rowsUsed} records · R² ${fmt(g.metrics.r2)}${g.location ? ` → ${fmt(g.location.metrics.r2After)} with location` : ''} · ${g.terms.length} inputs</span>
+          <span class="muted">${g.training.rowsUsed} records · R² ${fmt(g.metrics.r2)}${g.location ? ` · on unseen records ${fmt(g.location.metrics.r2Comps ?? g.location.metrics.r2After)}` : ''} · ${g.terms.length} inputs</span>
           ${isThin(g) ? '<span class="warn" title="Fewer than 2 records per weight: the formula can memorise its records">⚠ few records</span>' : ''}
           ${g.droppedInputs?.length ? `<span class="muted small" title="${esc(g.droppedInputs.map((d) => `${d.name}: ${d.reason}`).join('\n'))}">${g.droppedInputs.length} input(s) not used</span>` : ''}
         </header>

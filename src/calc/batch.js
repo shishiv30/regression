@@ -1,28 +1,53 @@
 // Batch prediction: estimate the outcome for every row of a second CSV
 // (e.g. sold listings) and, where the row has a real value, measure the gap.
 import Papa from 'papaparse';
-import { isMissing, toNumber } from './schema.js';
+import { isMissing, toNumber, analyzeColumns } from './schema.js';
 import { predict, isGrouped, resolveModel, noGroupReason, modelInputs } from './model.js';
 import { readCoords } from './location.js';
+import { LEVELS } from './confidence.js';
 
-const ACTUAL_RE = /(close|sold|sale|actual|final).*(price|value)|(price|value).*(close|sold|actual)/i;
-// Row-label candidates, most specific first.
-const LABEL_RES = [/mls/i, /^id$|[_\s.-]id$|Id$/, /address/i, /^(name|title)$/i];
-
-// Default mapping: each model input reads the same-named column; the actual
-// value is the outcome's column if present, else a column that looks like it.
-export function suggestMapping(model, columns) {
+// Default mapping, by names the model knows and by the values in the file:
+//  · each model input reads the same-named column;
+//  · the actual value is the outcome's column, else the unused numeric column
+//    whose values fall inside the training outcome range most often (at
+//    least half), the closest to its middle on a tie;
+//  · the row label is a field marked Label in training, else an unused text
+//    column with a different value on (nearly) every row.
+export function suggestMapping(model, columns, rows = []) {
   const inputs = {};
   for (const t of modelInputs(model)) inputs[t.name] = columns.includes(t.name) ? t.name : null;
-  const actual = columns.includes(model.outcome.name) ? model.outcome.name : columns.find((c) => ACTUAL_RE.test(c)) ?? null;
-  const label = LABEL_RES.map((re) => columns.find((c) => re.test(c))).find(Boolean) ?? null;
+  const taken = new Set(Object.values(inputs));
+  const free = columns.filter((c) => !taken.has(c));
+  const stats = rows.length ? analyzeColumns(free, rows) : {};
+  const actual = columns.includes(model.outcome.name) ? model.outcome.name : likeOutcome(model.outcome, free, stats, rows);
+  const label =
+    (model.labels ?? []).find((c) => columns.includes(c) && c !== actual) ??
+    free.find((c) => c !== actual && stats[c]?.type === 'enum' && stats[c].values.length >= 0.9 * stats[c].count && stats[c].count > 1) ??
+    null;
   return { inputs, actual, label };
 }
 
-// Value used when a row has no usable input: the training mean for numbers
-// (range midpoint for models saved before means were recorded), the baseline
-// (most common value) for enums.
+function likeOutcome({ min, max }, columns, stats, rows) {
+  const log = min > 0;
+  const mid = log ? Math.sqrt(min * max) : (min + max) / 2;
+  let best = null;
+  for (const c of columns) {
+    if (stats[c]?.type !== 'number') continue;
+    const vals = rows.map((r) => toNumber(r[c])).filter(Number.isFinite);
+    const inside = vals.filter((v) => v >= min && v <= max).length / vals.length;
+    const s = stats[c];
+    const off = log && s.median > 0 ? Math.abs(Math.log(s.median / mid)) : Math.abs(s.median - mid) / (max - min || 1);
+    if (inside >= 0.5 && (!best || inside > best.inside || (inside === best.inside && off < best.off))) best = { c, inside, off };
+  }
+  return best?.c ?? null;
+}
+
+// Value used when a row has no usable input: the training fill value when the
+// model was trained with blanks filled (median / most common value), else the
+// training mean for numbers (range midpoint for models saved before means were
+// recorded) and the baseline (most common value) for enums.
 export function fallbackValue(t) {
+  if (t.fill !== undefined) return t.fill;
   if (t.kind === 'number') return t.mean ?? (t.min + t.max) / 2;
   return t.baseline;
 }
@@ -42,7 +67,7 @@ export function predictBatch(model, rows, mapping) {
       group = col && !isMissing(row[col]) ? String(row[col]).trim() : '';
       formula = resolveModel(model, group);
       if (!formula) {
-        return { index, label, group, estimate: null, actual: has ? actual : null, gap: null, gapPct: null, imputed: [], missingLocation: [], locationAdj: null, warnings: [], error: noGroupReason(model, group) };
+        return { index, label, group, estimate: null, actual: has ? actual : null, gap: null, gapPct: null, imputed: [], missingLocation: [], locationAdj: null, compsAdj: null, low: null, high: null, confidence: null, warnings: [], error: noGroupReason(model, group) };
       }
     }
 
@@ -66,8 +91,12 @@ export function predictBatch(model, rows, mapping) {
       const coords = { [lat]: mapping.inputs[lat] ? row[mapping.inputs[lat]] : '', [lng]: mapping.inputs[lng] ? row[mapping.inputs[lng]] : '' };
       if (readCoords(coords, lat, lng)) Object.assign(record, coords);
       else missingLocation.push(...[[lat, 90], [lng, 180]].filter(([f, max]) => !(Math.abs(toNumber(coords[f])) <= max)).map(([f]) => f));
+      // The comparables' size field, when it is not a formula input.
+      const size = formula.location.size;
+      if (size && !(size in record) && mapping.inputs[size]) record[size] = row[mapping.inputs[size]];
     }
     const p = predict(model, record);
+    const amount = (key) => p.contributions.find((c) => c[key])?.contribution ?? null;
     const gap = has ? actual - p.value : null;
     return {
       index,
@@ -79,14 +108,19 @@ export function predictBatch(model, rows, mapping) {
       gapPct: has && actual !== 0 ? gap / actual : null,
       imputed,
       missingLocation,
-      locationAdj: p.location?.adjustment ?? null,
+      locationAdj: amount('location'),
+      compsAdj: amount('comps'),
+      low: p.confidence?.low ?? null,
+      high: p.confidence?.high ?? null,
+      confidence: p.confidence?.level ?? null,
       warnings: p.warnings,
     };
   });
-  return { results, summary: summarize(results) };
+  return { results, summary: summarizeResults(results) };
 }
 
-function summarize(results) {
+// Gap statistics for a set of batch results (all rows, or one group's).
+export function summarizeResults(results) {
   // Compared = has both an estimate and an actual value.
   const withActual = results.filter((r) => r.gap !== null);
   const n = withActual.length;
@@ -98,8 +132,17 @@ function summarize(results) {
   };
   if (!n) return summary;
   const pcts = withActual.filter((r) => r.gapPct !== null).map((r) => Math.abs(r.gapPct));
+  // Did the ranges hold, and is high confidence really better?
+  const ranged = withActual.filter((r) => r.low !== null);
+  const byLevel = {};
+  for (const level of LEVELS) {
+    const rs = withActual.filter((r) => r.confidence === level && r.gapPct !== null);
+    if (rs.length) byLevel[level] = { n: rs.length, medianApe: median(rs.map((r) => Math.abs(r.gapPct))) };
+  }
   return {
     ...summary,
+    inRange: ranged.length ? ranged.filter((r) => r.actual >= r.low && r.actual <= r.high).length / ranged.length : null,
+    byLevel,
     meanGap: withActual.reduce((a, r) => a + r.gap, 0) / n,
     mae: withActual.reduce((a, r) => a + Math.abs(r.gap), 0) / n,
     rmse: Math.sqrt(withActual.reduce((a, r) => a + r.gap ** 2, 0) / n),
@@ -118,15 +161,29 @@ function median(xs) {
 // Original columns plus the estimate and gap, for download.
 export function resultsToCsv(columns, rows, results, outcomeName) {
   const located = results.some((r) => r.locationAdj !== null);
-  const extra = [`est_${outcomeName}`, ...(located ? ['location_adj'] : []), 'gap', 'gap_pct', 'imputed_fields', 'note'];
+  const compared = results.some((r) => r.compsAdj !== null);
+  const ranged = results.some((r) => r.low !== null);
+  const rated = results.some((r) => r.confidence !== null);
+  const num = (v) => (v === null ? '' : v.toFixed(2));
+  const extra = [
+    `est_${outcomeName}`,
+    ...(ranged ? [`est_low`, `est_high`] : []),
+    ...(rated ? ['confidence'] : []),
+    ...(located ? ['location_adj'] : []),
+    ...(compared ? ['comparables_adj'] : []),
+    'gap', 'gap_pct', 'imputed_fields', 'note',
+  ];
   return Papa.unparse({
     fields: [...columns, ...extra],
     data: rows.map((row, i) => {
       const r = results[i];
       return [
         ...columns.map((c) => row[c]),
-        r.estimate === null ? '' : r.estimate.toFixed(2),
-        ...(located ? [r.locationAdj === null ? '' : r.locationAdj.toFixed(2)] : []),
+        num(r.estimate),
+        ...(ranged ? [num(r.low), num(r.high)] : []),
+        ...(rated ? [r.confidence ?? ''] : []),
+        ...(located ? [num(r.locationAdj)] : []),
+        ...(compared ? [num(r.compsAdj)] : []),
         r.gap === null ? '' : r.gap.toFixed(2),
         r.gapPct === null ? '' : (r.gapPct * 100).toFixed(2),
         [...r.imputed, ...r.missingLocation].join(' '),

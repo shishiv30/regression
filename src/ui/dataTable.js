@@ -1,7 +1,8 @@
 // Main-area "Data table" tab: every row of the batch CSV with all its
 // columns, plus the estimate and gap. Click a header to sort.
-import { fmt, signed, esc, missingAlert } from './format.js';
+import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge } from './format.js';
 
+const LEVEL_ORDER = { high: 0, medium: 1, low: 2 };
 const MAX_ROWS = 2000; // keep the DOM responsive on big files
 
 export function createDataTable(el) {
@@ -23,7 +24,10 @@ export function createDataTable(el) {
       { key: 'est', label: `est_${outcomeName}`, value: (r) => r.estimate },
       ...(mapping.actual ? [field(mapping.actual)] : []),
       { key: '#', label: '#', value: (r) => r.index + 1 },
+      ...(results.some((r) => r.confidence) ? [{ key: 'conf', label: 'confidence', value: (r) => LEVEL_ORDER[r.confidence] }] : []),
+      ...(results.some((r) => r.low !== null) ? [{ key: 'range', label: 'likely range', value: (r) => r.low }] : []),
       ...(locationFields.length ? [{ key: 'loc', label: 'location adj', value: (r) => r.locationAdj }] : []),
+      ...(results.some((r) => r.compsAdj !== null) ? [{ key: 'comps', label: 'comparables adj', value: (r) => r.compsAdj }] : []),
       ...(mapping.actual ? [
         { key: 'gap', label: 'gap', value: (r) => r.gap },
         { key: 'gapPct', label: 'gap %', value: (r) => r.gapPct },
@@ -58,6 +62,9 @@ export function createDataTable(el) {
             if (r.estimate === null) return `<td class="num est" title="${esc(r.error ?? '')}"><span class="warn">no formula</span></td>`;
             return `<td class="num est"><b>${fmt(r.estimate)}</b>${missingAlert(r.imputed, r.missingLocation)}</td>`;
           }
+          if (c.key === 'conf') return `<td class="est">${confidenceBadge(r.confidence)}</td>`;
+          if (c.key === 'range') return `<td class="num est">${r.low === null ? '<span class="muted">—</span>' : rangeText(r)}</td>`;
+          if (c.key === 'comps') return `<td class="num est loc-adj">${r.compsAdj === null ? '<span class="muted">—</span>' : signed(r.compsAdj)}</td>`;
           if (c.key === 'loc') return `<td class="num est loc-adj">${r.locationAdj === null ? '<span class="muted">—</span>' : signed(r.locationAdj)}</td>`;
           if (c.key === 'gap') return `<td class="num est">${r.gap === null ? '<span class="muted">—</span>' : gapHtml(r.gap, fmt(Math.abs(r.gap)))}</td>`;
           if (c.key === 'gapPct') return `<td class="num est">${r.gapPct === null ? '<span class="muted">—</span>' : gapHtml(r.gapPct, `${(Math.abs(r.gapPct) * 100).toFixed(1)}%`)}</td>`;

@@ -1,11 +1,11 @@
 // Right panel, batch section: column mapping, gap summary and results table.
 import { modelInputs } from '../calc/index.js';
-import { fmt, signed, esc, missingAlert } from './format.js';
+import { fmt, signed, esc, missingAlert, rangeText, confidenceBadge } from './format.js';
 
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(1)}%`);
 const signedPct = (v) => (v === null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(1)}%`);
 
-export function renderBatch(el, { batch, model, mapping, output }, { onMapping, onDownload } = {}) {
+export function renderBatch(el, { batch, model, mapping, output, scope }, { onMapping, onDownload } = {}) {
   if (!batch) {
     el.innerHTML = '';
     return;
@@ -21,6 +21,7 @@ export function renderBatch(el, { batch, model, mapping, output }, { onMapping, 
 
   el.innerHTML = `
     <p class="file-line"><b>${esc(fileName)}</b> · ${rows.length} records</p>
+    ${scope ? `<div class="notice">Showing the ${output.results.length} of ${scope.total} rows with <b>${esc(scope.groupBy)}</b> = <b>${esc(scope.group)}</b>, the group selected on the left. Pick another group there to see its rows; the download has every row.</div>` : ''}
 
     ${groupInput && !mapping.inputs[groupInput.name] ? `<div class="notice">Pick the column that holds <b>${esc(groupInput.name)}</b>; each row is estimated with its group's formula.</div>` : ''}
     <details class="mapping" ${unmapped.length || !mapping.actual || (groupInput && !mapping.inputs[groupInput.name]) ? 'open' : ''}>
@@ -53,7 +54,7 @@ export function renderBatch(el, { batch, model, mapping, output }, { onMapping, 
           .map(
             (r) => `<tr>
               <td>${esc(r.label)}</td>
-              <td class="num"${r.error ? ` title="${esc(r.error)}"` : ''}>${r.estimate === null ? '<span class="warn">no formula</span>' : fmt(r.estimate) + missingAlert(r.imputed, r.missingLocation)}</td>
+              <td class="num"${r.error ? ` title="${esc(r.error)}"` : r.low !== null ? ` title="likely ${rangeText(r)}"` : ''}>${r.estimate === null ? '<span class="warn">no formula</span>' : fmt(r.estimate) + missingAlert(r.imputed, r.missingLocation)}${r.confidence ? ` ${confidenceBadge(r.confidence)}` : ''}</td>
               <td class="num">${r.actual === null ? '<span class="muted">—</span>' : fmt(r.actual)}</td>
               <td class="num">${signedPct(r.gapPct)}</td>
             </tr>`,
@@ -93,5 +94,7 @@ function summaryHtml(s, mapping, model) {
       <span>Mean |gap|</span><b>${fmt(s.mae)} (${pct(s.mape)})</b>
       <span>Average gap</span><b>${signed(s.meanGap)} · ${bias}</b>
       <span>RMSE</span><b>${fmt(s.rmse)}</b>
+      ${s.inRange === null ? '' : `<span title="Share of actual values inside the estimate's likely range; about 80% means the ranges are honest">In likely range</span><b>${pct(s.inRange)} <span class="muted">(aim ≈ 80%)</span></b>`}
+      ${Object.entries(s.byLevel ?? {}).map(([level, v]) => `<span>${confidenceBadge(level)} confidence</span><b>median |gap| ${pct(v.medianApe)} <span class="muted">· ${v.n} rows</span></b>`).join('')}
     </div>`;
 }

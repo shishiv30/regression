@@ -23,14 +23,27 @@ export function analyzeColumn(rows, name, forcedType) {
   const type = forcedType === 'enum' || !numericOk ? 'enum' : 'number';
 
   if (type === 'number') {
-    let min = Infinity, max = -Infinity, sum = 0;
-    for (const v of present) {
-      const n = toNumber(v);
+    let min = Infinity, max = -Infinity, sum = 0, whole = 0;
+    const nums = new Float64Array(present.length);
+    const digits = new Float64Array(present.length);
+    present.forEach((v, i) => {
+      const n = (nums[i] = toNumber(v));
       if (n < min) min = n;
       if (n > max) max = n;
       sum += n;
-    }
-    return { name, type, numericOk, count: present.length, missing, min, max, mean: sum / present.length };
+      if (Number.isInteger(n)) whole++;
+      digits[i] = /\.(\d+)/.exec(v)?.[1].replace(/0+$/, '').length ?? 0;
+    });
+    nums.sort();
+    digits.sort();
+    const m = nums.length >> 1;
+    const median = nums.length % 2 ? nums[m] : (nums[m - 1] + nums[m]) / 2;
+    return {
+      name, type, numericOk, count: present.length, missing, min, max, mean: sum / present.length, median,
+      distinct: new Set(nums).size,
+      wholeShare: whole / present.length, // share of whole numbers
+      decimals: digits[m], // typical number of decimal places
+    };
   }
 
   const counts = new Map();
@@ -46,28 +59,50 @@ export function analyzeColumns(columns, rows, types = {}) {
   return out;
 }
 
-const LAT_RE = /(^|[._\s-])(lat|latitude)$/i;
-const LNG_RE = /(^|[._\s-])(lng|lon|long|longitude)$/i;
+// Suggestions below go by the values only, never by column names, so they
+// work the same for any subject.
 
-// Sensible starting roles: last numeric column is the outcome; other numeric
-// columns and low-cardinality enums are inputs; ids / free text are ignored;
-// numeric columns named like lat/lng become the location.
+// An enum with more distinct values than this is free text or an id: a label.
+export const MAX_ENUM_VALUES = 30;
+// Coordinates are recorded to about 1 m or finer: 4+ decimal places on
+// typical values and almost no whole numbers.
+const COORD_DECIMALS = 4;
+
+const coordLike = (s, limit) =>
+  s?.type === 'number' && s.decimals >= COORD_DECIMALS && s.wholeShare < 0.05 && s.min >= -limit && s.max <= limit && s.max > s.min;
+
+// The first pair of columns that look like latitude and longitude (both
+// within ±180, one within ±90), or nulls. With both within ±90 the first
+// column is taken as the latitude.
+export function detectCoords(columns, stats) {
+  const cands = columns.filter((c) => coordLike(stats[c], 180));
+  const lat = cands.find((c) => coordLike(stats[c], 90));
+  const lng = lat && cands.find((c) => c !== lat);
+  return lat && lng ? { lat, lng } : { lat: null, lng: null };
+}
+
+// A row counter (1, 2, 3, … in any order): whole numbers, all different, no
+// gaps. It numbers records rather than measuring them.
+const counterLike = (s) =>
+  s.type === 'number' && s.count >= 10 && s.wholeShare === 1 && s.distinct === s.count && s.max - s.min + 1 === s.count;
+
+// Sensible starting roles: a coordinate-like pair is the location; the last
+// other numeric column is the outcome; the remaining numeric columns and enums
+// with 2–30 values are inputs; row counters and enums with more values (ids,
+// free text) become labels (shown on hover, never trained on).
 export function suggestRoles(columns, stats) {
   const roles = {};
-  const numeric = columns.filter((c) => stats[c].type === 'number');
-  const lat = numeric.find((c) => LAT_RE.test(c));
-  const lng = numeric.find((c) => LNG_RE.test(c));
-  const located = lat && lng;
-  const outcome = numeric.filter((c) => !located || (c !== lat && c !== lng)).pop();
+  const { lat, lng } = detectCoords(columns, stats);
+  const outcome = columns.filter((c) => stats[c].type === 'number' && c !== lat && c !== lng && !counterLike(stats[c])).pop();
   for (const c of columns) {
     const s = stats[c];
-    const looksLikeId = /^id$|[_\s-]id$/i.test(c);
-    if (located && c === lat) roles[c] = 'lat';
-    else if (located && c === lng) roles[c] = 'lng';
+    if (c === lat) roles[c] = 'lat';
+    else if (c === lng) roles[c] = 'lng';
     else if (c === outcome) roles[c] = 'outcome';
-    else if (looksLikeId) roles[c] = 'ignore';
+    else if (counterLike(s)) roles[c] = 'label';
     else if (s.type === 'number') roles[c] = 'input';
-    else roles[c] = s.values.length >= 2 && s.values.length <= 30 ? 'input' : 'ignore';
+    else if (s.values.length > MAX_ENUM_VALUES) roles[c] = 'label';
+    else roles[c] = s.values.length >= 2 ? 'input' : 'ignore';
   }
   return roles;
 }

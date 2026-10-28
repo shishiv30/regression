@@ -1,6 +1,6 @@
 // Outcome report (left) and the prediction form (right of the graph).
 import { termImportance, isThin } from '../calc/index.js';
-import { fmt, signed, esc } from './format.js';
+import { fmt, signed, esc, effect, spreadText, pctText, rangeText, confidenceBadge } from './format.js';
 
 export function renderReport(el, model, { stale, shown, onGroup } = {}) {
   if (!model) {
@@ -14,14 +14,15 @@ export function renderReport(el, model, { stale, shown, onGroup } = {}) {
     <div class="kv">
       <span>Outcome</span><b>${esc(model.outcome.name)}</b>
       ${grouped ? `<span>Grouped by</span><b>${esc(model.groupBy)} · ${Object.keys(model.groups).length} formulas</b>` : ''}
-      <span>Records used</span><b>${tr.rowsUsed}${tr.rowsDropped ? ` <span class="warn">(${tr.rowsDropped} dropped: missing values${grouped ? ' or skipped group' : ''})</span>` : ''}${tr.outliers?.length ? ` <span class="warn">(${tr.outliers.length} outliers)</span>` : ''}</b>
+      <span>Records used</span><b>${tr.rowsUsed}${tr.rowsFilled ? ` <span class="muted">(${tr.rowsFilled} with blanks filled by the median)</span>` : ''}${tr.rowsDropped ? ` <span class="warn">(${tr.rowsDropped} dropped: ${tr.missing === 'median' ? 'no outcome' : 'missing values'}${grouped ? ' or skipped group' : ''})</span>` : ''}${tr.outliers?.length ? ` <span class="warn">(${tr.outliers.length} outliers)</span>` : ''}</b>
       <span>Steps</span><b>${tr.steps}${tr.stopped ? ` of ${tr.requestedSteps} (stopped)` : ''} · ${tr.optimizer} · lr ${tr.learningRate}</b>
       <span>Trained</span><b>${new Date(tr.trainedAt).toLocaleString()}</b>
     </div>
     ${outliersHtml(tr, grouped)}
     ${grouped ? '<h3>All groups together</h3>' : ''}
     ${metricsHtml(model.metrics)}
-    ${grouped && model.locationMetrics ? locationFitHtml(model.locationMetrics) : ''}`;
+    ${grouped && model.locationMetrics ? locationFitHtml(model.locationMetrics) : ''}
+    ${grouped && model.locationMetrics && model.locationMetricsSkipped?.length ? `<p class="muted small">Left out of these figures: ${model.locationMetricsSkipped.map(esc).join(', ')} (⚠ too few records for their weights).</p>` : ''}`;
 
   el.innerHTML = grouped ? header + groupsHtml(model, shown) + detailHtml(shown, { group: true }) : header + detailHtml(model);
 
@@ -57,6 +58,7 @@ const locationFitHtml = (m) => `
   <div class="kv small location-fit">
     <span>R² with location</span><b>${fmt(m.r2Before)} → <span class="${m.r2After >= m.r2Before ? 'pos' : 'neg'}">${fmt(m.r2After)}</span></b>
     <span>RMSE with location</span><b>${fmt(m.rmseBefore)} → ${fmt(m.rmseAfter)}</b>
+    ${m.r2Comps === undefined ? '' : `<span>+ comparables</span><b>R² <span class="${m.r2Comps >= m.r2After ? 'pos' : 'neg'}">${fmt(m.r2Comps)}</span> · RMSE ${fmt(m.rmseComps)}</b>`}
   </div>`;
 
 const metricsHtml = (m) => `
@@ -99,11 +101,11 @@ function detailHtml(model, { group = false } = {}) {
       const imp = termImportance(t);
       const share = `<div class="bar"><span style="width:${((imp / total) * 100).toFixed(1)}%"></span></div>`;
       if (t.kind === 'number') {
-        return `<tr><td>${esc(t.name)}</td><td class="num ${t.weight >= 0 ? 'pos' : 'neg'}">${fmt(t.weight)}</td><td>${share}</td></tr>`;
+        return `<tr><td>${esc(t.name)}</td><td class="num ${t.weight >= 0 ? 'pos' : 'neg'}">${model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</td><td>${share}</td></tr>`;
       }
       const cats = Object.entries(t.weights)
         .filter(([k]) => k !== t.baseline)
-        .map(([k, w]) => `<tr class="sub"><td>${esc(k)}</td><td class="num ${w >= 0 ? 'pos' : 'neg'}">${signed(w)}</td><td></td></tr>`)
+        .map(([k, w]) => `<tr class="sub"><td>${esc(k)}</td><td class="num ${w >= 0 ? 'pos' : 'neg'}">${effect(model, w)}</td><td></td></tr>`)
         .join('');
       return `<tr><td>${esc(t.name)} <span class="muted">vs ${esc(t.baseline)}</span></td><td class="num muted">enum</td><td>${share}</td></tr>${cats}`;
     })
@@ -113,12 +115,13 @@ function detailHtml(model, { group = false } = {}) {
     .concat(model.terms.map((t) => (t.kind === 'number' ? `${signed(t.weight)}·${esc(t.name)}` : `+ w[${esc(t.name)}]`)))
     .concat(model.location ? ['+ location'] : [])
     .join(' ');
+  const lhs = model.outcome.log ? `log(${esc(model.outcome.name)})` : esc(model.outcome.name);
   const dropped = model.droppedInputs?.length
     ? `<div class="notice">Not used in this group: ${model.droppedInputs.map((d) => `${esc(d.name)} (${esc(d.reason)})`).join(', ')}</div>`
     : '';
 
   const thin = isThin(model)
-    ? `<div class="notice">⚠ Only ${model.training.rowsUsed} records for ${model.training.weights} weights. This formula can memorise its training records, so its R² overstates how well it estimates new ones. Use fewer inputs (e.g. zipCode as a number or ignored) or more records.</div>`
+    ? `<div class="notice">⚠ Only ${model.training.rowsUsed} records for ${model.training.weights} weights. This formula can memorise its training records, so its R² overstates how well it estimates new ones. Use fewer inputs (e.g. an enum with many values as a number, or ignored) or more records.</div>`
     : '';
   return `
     ${group ? metricsHtml(model.metrics) : ''}
@@ -128,15 +131,38 @@ function detailHtml(model, { group = false } = {}) {
     <canvas class="loss" height="90"></canvas>
     <h3>Weights</h3>
     <table class="weights">
-      <thead><tr><th>Field</th><th class="num">Weight</th><th>Effect share</th></tr></thead>
+      <thead><tr><th>Field</th><th class="num" ${model.outcome.log ? 'title="Log scale: the change in the outcome per unit (numbers) or vs. the baseline (enums)"' : ''}>${model.outcome.log ? 'Effect' : 'Weight'}</th><th>Effect share</th></tr></thead>
       <tbody>
         <tr><td>intercept</td><td class="num">${fmt(model.intercept)}</td><td></td></tr>
         ${weightRows}
-        ${model.location ? `<tr><td>location <span class="muted">nearby records</span></td><td class="num muted">±${fmt(model.location.spread / 2)}</td><td><div class="bar"><span class="loc" style="width:${((model.location.spread / total) * 100).toFixed(1)}%"></span></div></td></tr>` : ''}
+        ${model.location ? `<tr><td>location <span class="muted">nearby records</span></td><td class="num muted">${spreadText(model, model.location.spread / 2)}</td><td><div class="bar"><span class="loc" style="width:${((model.location.spread / total) * 100).toFixed(1)}%"></span></div></td></tr>` : ''}
       </tbody>
     </table>
-    <p class="equation"><span class="muted">${esc(model.outcome.name)}${group ? ` [${esc(model.group)}]` : ''} =</span> ${eq}</p>
-    ${locationHtml(model)}`;
+    <p class="equation"><span class="muted">${lhs}${group ? ` [${esc(model.group)}]` : ''} =</span> ${eq}</p>
+    ${model.outcome.log ? '<p class="muted small">Log scale: the formula estimates log of the outcome, so each effect is a percentage change.</p>' : ''}
+    ${locationHtml(model)}
+    ${rangesHtml(model)}`;
+}
+
+// The 80% ranges measured on records the estimates had not seen: overall
+// and, with comparables, per confidence level.
+const rangeSpan = (r) => (r.mode === 'ratio' ? `${pctText(Math.exp(r.lo) - 1)} to ${pctText(Math.exp(r.hi) - 1)}` : `${signed(r.lo)} to ${signed(r.hi)}`);
+function rangesHtml(model) {
+  const overall = model.location?.range ?? model.range;
+  if (!overall) return '';
+  const levels = model.location?.confidence?.levels;
+  const row = (label, r) => `<tr><td>${label}</td><td class="num">${r.n}</td><td class="num">${r.medianApe === null ? '—' : `${fmt(r.medianApe * 100)}%`}</td><td class="num">${rangeSpan(r)}</td></tr>`;
+  const rows = [
+    ...(levels ? ['high', 'medium', 'low'].filter((l) => levels[l]).map((l) => row(confidenceBadge(l), levels[l])) : []),
+    row(levels ? 'all' : 'every estimate', overall),
+  ].join('');
+  return `
+    <h3>How far off estimates are</h3>
+    <table class="weights">
+      <thead><tr><th>Confidence</th><th class="num">Records</th><th class="num" title="Median of |actual − estimate| ÷ actual">Typical miss</th><th class="num" title="8 in 10 actual values fell in this range around the estimate">80% range</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="muted small">Measured on training records the estimates had not seen (each left out of its own fit and neighbours), outliers included. ${levels ? 'Confidence comes from how far the formula and the comparables disagree and how much the comparables vary.' : ''}</p>`;
 }
 
 function locationHtml(model) {
@@ -151,11 +177,12 @@ function locationHtml(model) {
     <div class="kv small">
       <span>Records with coordinates</span><b>${loc.points.length}</b>
       <span title="Picked in training. Records this far away count about 60% as much as one next door.">Distance scale</span><b>${fmt(loc.scaleKm)} km <span class="muted">(picked in training)</span></b>
-      <span>Typical shift</span><b>±${fmt(loc.spread / 2)}</b>
+      <span>Typical shift</span><b>${spreadText(model, loc.spread / 2)}</b>
+      ${loc.size ? `<span title="Nearest training records of similar ${esc(loc.size)}, priced by their ${esc(model.outcome.name)} per ${esc(loc.size)}">Comparables by</span><b>${esc(loc.size)} <span class="muted">(blended 50/50 with the formula)</span></b>` : ''}
     </div>
     ${locationFitHtml(m)}
     ${helps ? '' : '<div class="notice">Location does not improve the estimates for these records; nearby records miss in unrelated ways.</div>'}
-    <p class="muted small">R² and RMSE: formula alone → formula + location, with each record left out of its own neighbours.</p>`;
+    <p class="muted small">R² and RMSE on records the estimates had not seen: formula alone → formula + location${loc.size ? ' → + comparables' : ''}, each record left out of its own fit and neighbours. Lower than the training R² above, which is measured on the records the formula was fitted to.</p>`;
 }
 
 function drawLoss(canvas, history) {
@@ -207,7 +234,7 @@ export function renderPredictForm(form, model, onSubmit, { group, onGroup } = {}
         const id = `p-${i}`;
         const control =
           t.kind === 'number'
-            ? `<input id="${id}" name="${esc(t.name)}" type="number" step="any" required placeholder="${fmt(t.min)} – ${fmt(t.max)}" />`
+            ? `<input id="${id}" name="${esc(t.name)}" type="number" step="any" ${t.fill === undefined ? 'required' : `title="Leave blank to use the training median, ${fmt(t.fill)}"`} placeholder="${fmt(t.min)} – ${fmt(t.max)}" />`
             : `<select id="${id}" name="${esc(t.name)}" required>${t.values.map((v) => `<option>${esc(v)}</option>`).join('')}</select>`;
         return `<label for="${id}">${esc(t.name)}</label>${control}`;
       })
@@ -243,32 +270,66 @@ export function renderPrediction(el, model, result, error, dataset) {
     return;
   }
   const rows = result.contributions
-    .map((c) => `<tr><td>${esc(c.name)} <span class="muted">${c.location ? `from ${result.location.neighbours.length} nearby records` : `= ${esc(typeof c.input === 'number' ? fmt(c.input) : c.input)}`}</span></td><td class="num ${c.contribution >= 0 ? 'pos' : 'neg'}">${signed(c.contribution)}</td></tr>`)
+    .map((c) => `<tr><td>${esc(c.name)} <span class="muted">${c.location ? `from ${result.location.neighbours.length} nearby records` : c.comps ? `${result.comps.neighbours.length} similar nearby, blended 50/50` : `= ${esc(typeof c.input === 'number' ? fmt(c.input) : c.input)}`}</span></td><td class="num ${c.contribution >= 0 ? 'pos' : 'neg'}">${signed(c.contribution)}${c.pct === undefined ? '' : ` <span class="muted">(${pctText(c.pct)})</span>`}</td></tr>`)
     .join('');
   el.innerHTML = `
     <div class="result">
       <span class="muted">Predicted ${esc(model.outcome.name)}${result.group ? ` · ${esc(model.groupBy)} = ${esc(result.group)} formula` : ''}</span>
       <b>${fmt(result.value)}</b>
+      ${confidenceHtml(result.confidence)}
     </div>
     <table class="weights">
       <tr><td>average record <span class="muted">(starting point)</span></td><td class="num">${fmt(result.reference)}</td></tr>
       ${rows}
     </table>
     <p class="muted small">Each row is how that value moves the prediction compared with an average record.</p>
-    ${result.location ? neighboursHtml(result.location, model.outcome.name, dataset) : ''}
+    ${result.comps ? compsHtml(result, model, dataset) : ''}
+    ${result.location ? neighboursHtml(result.location, resolveFormula(model, result), dataset, model) : ''}
+    ${result.filled?.length ? `<div class="notice">Blank: ${result.filled.map(esc).join(', ')}. Filled with the training median, so the estimate is less reliable.</div>` : ''}
     ${result.warnings.map((w) => `<div class="notice">${esc(w)}</div>`).join('')}`;
+}
+
+const resolveFormula = (model, result) => (model.groups ? model.groups[result.group] : model);
+
+// The likely range and confidence level under an estimate.
+function confidenceHtml(c) {
+  if (!c) return '';
+  const range = c.low != null ? `<span class="range-text" title="8 in 10 similar records${c.source === 'training' ? ' in training' : ' the estimates had not seen'} were in this range">likely ${rangeText(c)}</span>` : '';
+  return `<div class="confidence">${c.level ? `${confidenceBadge(c.level)} confidence` : ''} ${range}</div>`;
+}
+
+const labelOf = (dataset, row, model) => {
+  const r = dataset?.rows[row];
+  const key = r && model?.labels?.find((c) => dataset.columns.includes(c));
+  return key && r[key] ? esc(r[key]) : row >= 0 ? `#${row + 1}` : '—';
+};
+const away = (km) => (km < 1 ? `${Math.round(km * 1000)} m` : `${fmt(km)} km`);
+
+// The comparables behind the estimate: nearby training records of similar
+// size and their value per size unit.
+function compsHtml(result, model, dataset) {
+  const { comps } = result;
+  const loc = resolveFormula(model, result).location;
+  const name = model.outcome.name;
+  const rows = comps.neighbours
+    .map((n) => `<tr><td>${labelOf(dataset, n.row, model)}</td><td class="num">${away(n.distanceKm)}</td><td class="num">${fmt(n.size)}</td><td class="num">${fmt(n.actual)}</td><td class="num">${fmt(n.actual / n.size)}</td></tr>`)
+    .join('');
+  return `
+    <h3>Comparables</h3>
+    <p class="small">Median ${esc(name)} per ${esc(loc.size)} of the ${comps.neighbours.length} nearest records of similar ${esc(loc.size)}, × ${fmt(comps.size)} = <b>${fmt(comps.value)}</b>. Formula + location gives ${fmt(result.formula)}; the estimate blends the two.</p>
+    <table class="weights neighbours">
+      <thead><tr><th>Record</th><th class="num">Away</th><th class="num">${esc(loc.size)}</th><th class="num">${esc(name)}</th><th class="num">per ${esc(loc.size)}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 // The training records behind the location adjustment: how far away they are
 // and how much the formula missed on each.
-function neighboursHtml(loc, outcome, dataset) {
-  const labelOf = (row) => {
-    const r = dataset?.rows[row];
-    const key = r && dataset.columns.find((c) => /mls|address|^id$/i.test(c));
-    return key && r[key] ? esc(r[key]) : row >= 0 ? `#${row + 1}` : '—';
-  };
+function neighboursHtml(loc, formula, dataset, model) {
+  const outcome = formula.outcome.name;
+  const missed = (r) => (formula.outcome.log ? pctText(Math.exp(r) - 1) : signed(r));
   const rows = loc.neighbours
-    .map((n) => `<tr><td>${labelOf(n.row)}</td><td class="num">${n.distanceKm < 1 ? `${Math.round(n.distanceKm * 1000)} m` : `${fmt(n.distanceKm)} km`}</td><td class="num">${fmt(n.actual)}</td><td class="num ${n.residual >= 0 ? 'pos' : 'neg'}">${signed(n.residual)}</td><td class="num">${Math.round(n.share * 100)}%</td></tr>`)
+    .map((n) => `<tr><td>${labelOf(dataset, n.row, model)}</td><td class="num">${away(n.distanceKm)}</td><td class="num">${fmt(n.actual)}</td><td class="num ${n.residual >= 0 ? 'pos' : 'neg'}">${missed(n.residual)}</td><td class="num">${Math.round(n.share * 100)}%</td></tr>`)
     .join('');
   return `
     <h3>Nearest training records</h3>

@@ -21,10 +21,15 @@ describe('batch prediction (synthetic)', () => {
     ],
   };
 
-  it('suggests same-named inputs, a price-like actual column and a label column', () => {
-    const m = suggestMapping(model, ['a', 'kind', 'closePrice', 'mlsNumber']);
-    expect(m).toEqual({ inputs: { a: 'a', b: null }, actual: 'closePrice', label: 'mlsNumber' });
+  it('suggests same-named inputs, and an actual and a label column by their values', () => {
+    // Column names say nothing: 'v2' holds values in the outcome range (0–1000),
+    // 'v1' far outside it, 'tag' a different text on every row.
+    const rows = Array.from({ length: 12 }, (_, i) => ({ a: String(i), kind: i % 2 ? 'p' : 'q', v1: String(5000 + i), v2: String(200 + 30 * i), tag: `R-${i}` }));
+    const m = suggestMapping(model, ['a', 'kind', 'v1', 'v2', 'tag'], rows);
+    expect(m).toEqual({ inputs: { a: 'a', b: null }, actual: 'v2', label: 'tag' });
     expect(suggestMapping(model, ['a', 'b', 'y']).actual).toBe('y');
+    // A field marked Label in training wins.
+    expect(suggestMapping({ ...model, labels: ['kind'] }, ['a', 'kind', 'v2', 'tag'], rows).label).toBe('kind');
   });
 
   it('estimates every row, fills gaps with training averages and measures the gap', () => {
@@ -53,22 +58,22 @@ describe('batch prediction (synthetic)', () => {
   });
 });
 
-describe('Austin: train on for-sale, verify on sold', () => {
-  it('estimates all 4 sold listings and compares each closePrice', async () => {
-    const model = await train('./test-austin-training-data.csv');
-    expect(model.outcome.name).toBe('listPrice');
+describe('San Jose: train on sold, verify on for-sale', () => {
+  it('estimates every for-sale listing and compares each listPrice', async () => {
+    const model = await train('../public/test-data/test-san-jose-training-data.csv');
+    expect(model.outcome.name).toBe('closePrice');
+    expect(model.labels).toContain('mlsNumber'); // text ids are labels, not inputs
 
-    const sold = read('./test-austin-verify-data.csv');
-    const mapping = suggestMapping(model, sold.columns);
-    expect(mapping.actual).toBe('closePrice');
+    const forSale = read('../public/test-data/test-san-jose-verify-data.csv');
+    const mapping = suggestMapping(model, forSale.columns, forSale.rows);
+    expect(mapping.actual).toBe('listPrice');
     expect(mapping.label).toBe('mlsNumber');
-    expect(mapping.inputs.listXdaysago).toBeNull(); // the sold file has soldXdaysago instead
+    expect(mapping.inputs.soldXdaysago).toBeNull(); // the for-sale file has listXdaysago instead
 
-    const { results, summary } = predictBatch(model, sold.rows, mapping);
-    expect(results).toHaveLength(4);
+    const { results, summary } = predictBatch(model, forSale.rows, mapping);
+    expect(results).toHaveLength(forSale.rows.length);
     expect(results.every((r) => Number.isFinite(r.estimate))).toBe(true);
-    expect(summary.withActual).toBe(4);
-    // LAND rows have no beds/baths/sqft and get training averages.
-    expect(results.find((r) => r.label === '20983408').imputed).toEqual(expect.arrayContaining(['bedrooms', 'sqftTotal']));
-  }, 60000);
+    expect(summary.withActual).toBeGreaterThan(0.99 * forSale.rows.length);
+    expect(summary.medianApe).toBeLessThan(0.25);
+  }, 120000);
 });

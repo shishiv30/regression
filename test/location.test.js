@@ -77,7 +77,7 @@ describe('location adjustment', () => {
 
   it('adjusts batch rows that have coordinates and flags the rest', () => {
     expect(modelInputs(model).filter((t) => t.location).map((t) => t.name)).toEqual(['latitude', 'longitude']);
-    const mapping = suggestMapping(model, verify.columns);
+    const mapping = suggestMapping(model, verify.columns, verify.rows);
     expect(mapping).toMatchObject({ inputs: { latitude: 'latitude', longitude: 'longitude' }, actual: 'closePrice', label: 'mlsNumber' });
     const { results, summary } = predictBatch(model, verify.rows, mapping);
     const without = results.filter((r) => r.missingLocation.length);
@@ -92,7 +92,7 @@ describe('location adjustment', () => {
     expect(mae(located)).toBeLessThan(0.8 * mae(formulaOnly.filter((r) => located.some((l) => l.index === r.index))));
 
     const csv = resultsToCsv(verify.columns, verify.rows, results, 'price');
-    expect(csv.split('\n')[0]).toContain('est_price,location_adj,gap');
+    expect(csv.split('\n')[0]).toContain('est_price,est_low,est_high,location_adj,gap');
   });
 
   it('builds a location per group from that group only', async () => {

@@ -35,6 +35,14 @@
             <option value="sgd">SGD</option>
           </select>
         </label>
+        <label class="ctl" title="Log scale: the formula estimates log(outcome), so each weight is a percentage change. Suits prices and other values that grow by percentages. Auto uses it for an outcome that is always above 0 and spans at least 10×.">
+          Scale
+          <select id="log-outcome">
+            <option value="auto">Auto</option>
+            <option value="linear">Linear</option>
+            <option value="log">Log</option>
+          </select>
+        </label>
         <label class="ctl" title="Leave out records the formula misses far more than the rest (in robust standard deviations of the error), so bad data can't drag the weights">
           Outliers
           <select id="outliers">
@@ -45,7 +53,18 @@
             <option value="8">Drop &gt; 8σ</option>
           </select>
         </label>
+        <label class="ctl" title="A record with a blank input: drop it from training, or fill the blank with the field's median (numbers) or most common value (enums). Records without an outcome are always dropped.">
+          Missing values
+          <select id="missing">
+            <option value="drop">Drop record</option>
+            <option value="median">Fill with median</option>
+          </select>
+        </label>
         <label class="ctl" id="neighbours-ctl" title="How many nearby training records set each estimate's location adjustment" hidden>Neighbours <input id="neighbours" type="number" min="1" max="100" step="1" /></label>
+        <label class="ctl" id="comps-ctl" title="Comparables: the nearest training records of similar size, priced by their value per size unit (e.g. price per sqft). Blended with the formula, they also rate each estimate's confidence. Auto picks the number input that tracks the outcome best." hidden>
+          Comparables by
+          <select id="comps"></select>
+        </label>
         <button id="train-btn" class="btn primary" type="button">Train</button>
         <progress id="progress" max="1" value="0" hidden></progress>
         <span id="status" class="status" role="status"></span>
@@ -67,8 +86,19 @@
         <canvas id="graph" aria-label="Weight graph: each input field points to the outcome"></canvas>
         <div id="group-graphs" class="group-graphs" hidden></div>
       </div>
-      <div class="view gap-scroll" id="view-gap" hidden>
-        <canvas id="gap" aria-label="Gap between estimated and actual value for each record"></canvas>
+      <div class="view gap-view" id="view-gap" hidden>
+        <div class="gap-bar" id="gap-bar" hidden>
+          <div class="seg" role="radiogroup" aria-label="Gap chart layout">
+            <button type="button" data-layout="map" title="Each record at its latitude/longitude">Map</button>
+            <button type="button" data-layout="scatter" title="Actual (across) against estimate (up); on the diagonal the estimate is exact">Estimate vs actual</button>
+            <button type="button" data-layout="list" title="One row per record, sorted by gap">List</button>
+          </div>
+          <label class="ctl" title="Records with the same value are linked, and hovering one highlights the rest">Link by <select id="gap-link"></select></label>
+          <span class="muted small" id="gap-hint"></span>
+        </div>
+        <div class="gap-scroll" id="gap-scroll">
+          <canvas id="gap" aria-label="Gap between estimated and actual value for each record"></canvas>
+        </div>
       </div>
       <div class="view table-scroll" id="view-table" hidden></div>
       <div id="tooltip" class="tooltip" hidden></div>

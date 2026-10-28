@@ -1,7 +1,7 @@
 // Canvas "link net": every input field is a node with an edge pointing to the
 // outcome node. Edge width = effect size, colour = sign of the weight.
 import { termImportance, termSign } from '../calc/index.js';
-import { fmt, signed, esc } from './format.js';
+import { fmt, signed, esc, effect, spreadText } from './format.js';
 
 function palette() {
   const s = getComputedStyle(document.documentElement);
@@ -115,9 +115,9 @@ export function createGraph(canvas, tooltip) {
       if (pc) {
         label = signed(pc.contribution);
         labelColor = pc.contribution >= 0 ? c.pos : c.neg;
-      } else if (nd.t.kind === 'location') label = `±${fmt(nd.imp / 2)} · ${nd.t.neighbours} nearby`;
-      else if (nd.t.kind === 'number') label = `w ${fmt(nd.t.weight)}`;
-      else label = `Δ ${fmt(nd.imp)} · ${nd.t.values.length} values`;
+      } else if (nd.t.kind === 'location') label = `${spreadText(model, nd.imp / 2)} · ${nd.t.neighbours} nearby`;
+      else if (nd.t.kind === 'number') label = model.outcome.log ? `${effect(model, nd.t.weight)} /unit` : `w ${fmt(nd.t.weight)}`;
+      else label = `Δ ${model.outcome.log ? effect(model, nd.imp) : fmt(nd.imp)} · ${nd.t.values.length} values`;
       pill(ctx, label, lx, ly, labelColor, c);
     }
 
@@ -168,7 +168,7 @@ export function createGraph(canvas, tooltip) {
     ctx.fillText(truncate(ctx, model.outcome.name, W - ox + 60), ox, oy - R - 16);
     ctx.fillStyle = c.muted;
     ctx.font = '12px system-ui, sans-serif';
-    ctx.fillText(prediction ? `average record ${fmt(prediction.reference)}` : `intercept ${fmt(model.intercept)}`, ox, oy + R + 16);
+    ctx.fillText(prediction ? `average record ${fmt(prediction.reference)}` : (model.outcome.log ? `log scale · intercept ${fmt(model.intercept)}` : `intercept ${fmt(model.intercept)}`), ox, oy + R + 16);
   }
 
   function truncate(ctx, text, max) {
@@ -183,19 +183,19 @@ export function createGraph(canvas, tooltip) {
       const m = t.metrics;
       return `<strong>location</strong> <span class="muted">${esc(t.lat)} / ${esc(t.lng)}</span><br>
         shifts each estimate by how much the formula<br>missed on its ${t.neighbours} nearest training records<br>
-        distance scale: ${fmt(t.scaleKm)} km · typical shift ±${fmt(imp / 2)}<br>
+        distance scale: ${fmt(t.scaleKm)} km · typical shift ${spreadText(model, imp / 2)}<br>
         R² ${fmt(m.r2Before)} → ${fmt(m.r2After)} <span class="muted">(left-out check)</span>`;
     }
     if (t.kind === 'number') {
       return `<strong>${esc(t.name)}</strong> <span class="muted">number</span><br>
-        weight: <b>${fmt(t.weight)}</b> per unit<br>
+        weight: <b>${model.outcome.log ? effect(model, t.weight) : fmt(t.weight)}</b> per unit<br>
         range: ${fmt(t.min)} – ${fmt(t.max)}<br>
-        effect across range: ${fmt(imp)}`;
+        effect across range: ${model.outcome.log ? effect(model, imp) : fmt(imp)}`;
     }
     const rows = Object.entries(t.weights)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 15)
-      .map(([k, w]) => `<tr><td>${esc(k)}${k === t.baseline ? ' <i>(base)</i>' : ''}</td><td>${signed(w)}</td></tr>`)
+      .map(([k, w]) => `<tr><td>${esc(k)}${k === t.baseline ? ' <i>(base)</i>' : ''}</td><td>${effect(model, w)}</td></tr>`)
       .join('');
     const more = t.values.length > 15 ? `<div class="muted">…${t.values.length - 15} more</div>` : '';
     return `<strong>${esc(t.name)}</strong> <span class="muted">enum · ${t.values.length} values</span>
