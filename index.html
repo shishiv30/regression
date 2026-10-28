@@ -35,6 +35,16 @@
             <option value="sgd">SGD</option>
           </select>
         </label>
+        <label class="ctl" title="Leave out records the formula misses far more than the rest (in robust standard deviations of the error), so bad data can't drag the weights">
+          Outliers
+          <select id="outliers">
+            <option value="0">Keep all</option>
+            <option value="3">Drop &gt; 3σ</option>
+            <option value="3.5">Drop &gt; 3.5σ</option>
+            <option value="5">Drop &gt; 5σ</option>
+            <option value="8">Drop &gt; 8σ</option>
+          </select>
+        </label>
         <label class="ctl" id="neighbours-ctl" title="How many nearby training records set each estimate's location adjustment" hidden>Neighbours <input id="neighbours" type="number" min="1" max="100" step="1" /></label>
         <button id="train-btn" class="btn primary" type="button">Train</button>
         <progress id="progress" max="1" value="0" hidden></progress>

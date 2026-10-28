@@ -148,6 +148,73 @@ export function combineLocationMetrics(list) {
   });
 }
 
+// For outlier screening: a function giving each row the median residual of
+// its k nearest other rows (among those still kept), so a record is judged
+// against its neighbourhood rather than the whole map. Rows without usable
+// coordinates get 0. Candidates come from a coarse grid, so this stays fast
+// on large files.
+export function neighbourResiduals(rows, { lat, lng }, k = DEFAULT_NEIGHBOURS) {
+  const pts = rows.map((r) => readCoords(r, lat, lng));
+  const near = nearestAll(pts, 2 * k);
+  return (res, keep) => {
+    const kept = new Uint8Array(rows.length);
+    for (const i of keep) kept[i] = 1;
+    return near.map((list) => {
+      const rs = [];
+      for (const j of list) if (kept[j] && rs.push(res[j]) === k) break;
+      if (!rs.length) return 0;
+      rs.sort((a, b) => a - b);
+      const m = rs.length >> 1;
+      return rs.length % 2 ? rs[m] : (rs[m - 1] + rs[m]) / 2;
+    });
+  };
+}
+
+// Indexes of the m nearest other points for every point (closest first).
+function nearestAll(pts, m) {
+  const idx = pts.map((p, i) => (p ? i : -1)).filter((i) => i >= 0);
+  const out = pts.map(() => []);
+  if (idx.length < 2) return out;
+  let [minLat, maxLat, minLng, maxLng] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const i of idx) {
+    minLat = Math.min(minLat, pts[i].lat); maxLat = Math.max(maxLat, pts[i].lat);
+    minLng = Math.min(minLng, pts[i].lng); maxLng = Math.max(maxLng, pts[i].lng);
+  }
+  // Square-ish cells holding ~4 points each on average.
+  const cell = Math.max(1e-6, Math.sqrt(((maxLat - minLat) * (maxLng - minLng) || 1e-6) / (idx.length / 4)));
+  const key = (a, b) => `${a},${b}`;
+  const cx = (p) => Math.floor((p.lng - minLng) / cell), cy = (p) => Math.floor((p.lat - minLat) / cell);
+  const grid = new Map();
+  for (const i of idx) {
+    const kk = key(cx(pts[i]), cy(pts[i]));
+    if (!grid.has(kk)) grid.set(kk, []);
+    grid.get(kk).push(i);
+  }
+  const maxRing = Math.ceil(Math.max(maxLat - minLat, maxLng - minLng) / cell) + 1;
+  // km per grid cell, the smaller of the two directions: a safe stopping bound.
+  const kmPerCell = cell * Math.min(110.57, 111.32 * Math.cos((Math.max(Math.abs(minLat), Math.abs(maxLat)) * Math.PI) / 180));
+  for (const i of idx) {
+    const p = pts[i], x = cx(p), y = cy(p);
+    const best = [];
+    for (let r = 0; r <= maxRing; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          for (const j of grid.get(key(x + dx, y + dy)) ?? []) {
+            if (j !== i) best.push({ j, d: distanceKm(p.lat, p.lng, pts[j].lat, pts[j].lng) });
+          }
+        }
+      }
+      best.sort((a, b) => a.d - b.d);
+      best.length = Math.min(best.length, m);
+      // Every point beyond ring r is at least r cells away.
+      if (best.length === Math.min(m, idx.length - 1) && best.at(-1).d <= r * kmPerCell) break;
+    }
+    out[i] = best.map((b) => b.j);
+  }
+  return out;
+}
+
 // The adjustment for one record, with the neighbours behind it.
 // Returns null when the record has no usable coordinates.
 export function locationEffect(location, record) {

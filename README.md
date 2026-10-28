@@ -29,13 +29,14 @@ BASE_PATH=/regression/ npm run build && BASE_PATH=/regression/ npm run preview
   - `schema.js` detects number vs. enum, finds numeric min–max ranges, builds deduplicated enum dictionaries
   - `model.js` encodes the data (min-max scaling, one-hot against a baseline) and handles weights in original units, prediction and metrics
   - `trainer.js` runs gradient descent with TensorFlow.js (CPU backend) for N steps
+  - `outliers.js` finds records the formula misses far more than the rest, so training can leave them out
   - `location.js` adds the location adjustment from nearby training records (latitude/longitude)
   - `batch.js` estimates every row of a second CSV and measures the gap to its actual value
   - `storage.js` saves the dataset, field setup, model and batch file in localStorage
 - `src/ui/`: the presentation layer
   - top bar: CSV import, field cards (role and type), training controls (`fields.js`)
   - left panel: training report, loss curve, weights (`report.js`)
-  - main area, three tabs: **Weights** (`graph.js`, each input points to the outcome), **Gap chart** (`gapChart.js`) and **Data table** (`dataTable.js`, every predicted record with all its fields plus `est_<outcome>`, gap and gap %; click a header to sort)
+  - main area, three tabs: **Weights** (`graph.js`, each input points to the outcome), **Gap chart** (`gapChart.js`) and **Data table** (`dataTable.js`, every predicted record with `est_<outcome>` and the actual value in the first two columns, then the rest of the fields, gap and gap %; click a header to sort)
   - right panel: predict one record (`report.js`) and predict many records from a CSV (`batch.js`)
 
 ### How weights and estimates are read
@@ -56,6 +57,21 @@ Tick **Group by** on an enum field card (e.g. `listingType.name`) to train a sep
 - The **Weights** tab shows one weight graph per group, each drawn from that group's own formula (`groupGraphs.js`). Click a graph's header, a row in the left panel's group table, or **Showing formula for** to select a group; the left panel and the predict form follow the selected group.
 - A single prediction uses only the formula of the chosen group, and its breakdown is drawn on that group's graph.
 - Single and batch predictions use the formula of the record's group. In batch prediction, map the group column under **Column matching**. Rows whose group has no formula get no estimate and are marked **no formula**.
+
+## Outliers: leave bad records out of training
+
+A few bad records (a price with an extra zero, a size typed in the wrong unit) can drag every weight towards themselves. **Outliers** in the training bar (default **Drop > 3.5σ**) leaves them out before the formula is trained:
+
+1. A quick exact least-squares fit on the same inputs gives every record an error (actual − fit).
+2. A record's error is measured in robust standard deviations: its distance from the median error, divided by 1.4826 × the median absolute deviation. A few wild records barely move a median, so they can't hide themselves the way they would with a mean and standard deviation.
+3. Records past the cutoff are left out and the fit is redone, until the set stops changing (at most 20% of the records are left out).
+
+Errors, not raw values, are compared. A 9,000 sqft house with a high price fits the formula and is kept; a 2,500 sqft house at a mansion price does not fit and is left out.
+- **Group by**: each group is screened on its own records, against its own formula.
+- **Location**: a record's error is compared with the median error of its nearest neighbours first, so a pricey house in a pricey area is not flagged.
+- The report lists every record left out (row, group, actual value, the screening fit, and how many σ off). Outliers are also kept out of the location adjustment's stored residuals.
+
+On the Austin listings (5-fold, every held-out record counted, outliers included), dropping > 3.5σ cut the median error from 40% to 23%.
 
 ## Location: adjust by nearby records
 
@@ -105,4 +121,5 @@ Tests:
 - `test/batch.test.js` checks batch prediction: column matching, training-average fill-in, gap maths, the results CSV, and the Austin train-then-verify flow.
 - `test/calc.test.js` covers CSV parsing, type detection and training on the housing sample.
 - `test/location.test.js` checks the location adjustment: role detection, the left-out gain, shifts near the pricey and cheap spots, fade-out far away, missing coordinates, batch and group-by.
+- `test/outliers.test.js` poisons a clean dataset with a few bad records and checks they are left out, the weights come back, and each group is screened on its own.
 - `test/group.test.js` checks group-by training: one formula per group, dropped inputs, skipped groups, and routing in single and batch prediction.

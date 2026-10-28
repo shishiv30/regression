@@ -14,10 +14,11 @@ export function renderReport(el, model, { stale, shown, onGroup } = {}) {
     <div class="kv">
       <span>Outcome</span><b>${esc(model.outcome.name)}</b>
       ${grouped ? `<span>Grouped by</span><b>${esc(model.groupBy)} · ${Object.keys(model.groups).length} formulas</b>` : ''}
-      <span>Records used</span><b>${tr.rowsUsed}${tr.rowsDropped ? ` <span class="warn">(${tr.rowsDropped} dropped${grouped ? '' : ': missing values'})</span>` : ''}</b>
+      <span>Records used</span><b>${tr.rowsUsed}${tr.rowsDropped ? ` <span class="warn">(${tr.rowsDropped} dropped: missing values${grouped ? ' or skipped group' : ''})</span>` : ''}${tr.outliers?.length ? ` <span class="warn">(${tr.outliers.length} outliers)</span>` : ''}</b>
       <span>Steps</span><b>${tr.steps}${tr.stopped ? ` of ${tr.requestedSteps} (stopped)` : ''} · ${tr.optimizer} · lr ${tr.learningRate}</b>
       <span>Trained</span><b>${new Date(tr.trainedAt).toLocaleString()}</b>
     </div>
+    ${outliersHtml(tr, grouped)}
     ${grouped ? '<h3>All groups together</h3>' : ''}
     ${metricsHtml(model.metrics)}
     ${grouped && model.locationMetrics ? locationFitHtml(model.locationMetrics) : ''}`;
@@ -28,6 +29,26 @@ export function renderReport(el, model, { stale, shown, onGroup } = {}) {
   el.querySelector('#report-group')?.addEventListener('change', (e) => onGroup?.(e.target.value));
   const loss = el.querySelector('canvas.loss');
   if (loss) new ResizeObserver(() => drawLoss(loss, shown.history)).observe(loss);
+}
+
+// Records left out of training because the formula missed them by far more
+// than it misses a typical record (z = robust standard deviations of error).
+function outliersHtml(tr, grouped) {
+  if (!tr.outliers?.length) return '';
+  const rows = tr.outliers
+    .slice(0, 200)
+    .map((o) => `<tr><td class="num">${o.row + 1}</td>${grouped ? `<td>${esc(o.group)}</td>` : ''}<td class="num">${fmt(o.actual)}</td><td class="num">${fmt(o.fit)}</td><td class="num">${signed(o.z)}σ</td></tr>`)
+    .join('');
+  const more = tr.outliers.length > 200 ? `<p class="muted small">…${tr.outliers.length - 200} more</p>` : '';
+  return `
+    <details class="outliers">
+      <summary>${tr.outliers.length} outliers left out (more than ${tr.outlierCutoff}σ off)</summary>
+      <p class="muted small">Each record's error against a first fit, measured in robust standard deviations (from the median error). Records this far off are usually bad data, e.g. a wrong price or size.</p>
+      <table class="weights">
+        <thead><tr><th>Row</th>${grouped ? '<th>Group</th>' : ''}<th>Actual</th><th>Fit</th><th>Off by</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>${more}
+    </details>`;
 }
 
 // Formula alone vs. formula + location, each record left out of its own

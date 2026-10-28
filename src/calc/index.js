@@ -1,13 +1,15 @@
 // Public API of the calculation layer. The UI only imports from here.
 import { buildSpec, encodeDataset, buildModel, evaluate, predict } from './model.js';
-import { analyzeColumns } from './schema.js';
+import { analyzeColumns, toNumber } from './schema.js';
 import { trainLinear } from './trainer.js';
-import { locationFields, buildLocation, combineLocationMetrics, DEFAULT_NEIGHBOURS } from './location.js';
+import { findOutliers } from './outliers.js';
+import { locationFields, buildLocation, combineLocationMetrics, neighbourResiduals, DEFAULT_NEIGHBOURS } from './location.js';
 
 export { parseCsv } from './csv.js';
 export { analyzeColumns, suggestRoles } from './schema.js';
 export { validateConfig, predict, termImportance, termSign, isGrouped, resolveModel, modelInputs, modelLocation } from './model.js';
 export { DEFAULT_NEIGHBOURS } from './location.js';
+export { DEFAULT_OUTLIER_CUTOFF } from './outliers.js';
 export { suggestMapping, predictBatch, resultsToCsv } from './batch.js';
 export * as storage from './storage.js';
 
@@ -27,7 +29,28 @@ export async function trainModel(rows, stats, config, opts = {}) {
 
 async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowIndex } = {}) {
   const spec = buildSpec(stats, config);
-  const { X, y, used, dropped } = encodeDataset(rows, spec);
+  const encoded = encodeDataset(rows, spec);
+  const { dropped } = encoded;
+  let { X, y, used } = encoded;
+
+  // Records the formula misses far more than the rest are left out, so they
+  // can't drag the weights (or the location residuals) towards themselves.
+  // With a location, each record is judged against its own neighbourhood.
+  const coords = locationFields(config);
+  const local = config.outlierCutoff > 0 && coords && neighbourResiduals(used, coords, config.neighbours ?? DEFAULT_NEIGHBOURS);
+  const found = findOutliers(X, y, { cutoff: config.outlierCutoff ?? 0, local });
+  const outliers = found.map(({ i, fit, z }) => ({
+    row: rowIndex?.get(used[i]) ?? -1,
+    actual: toNumber(used[i][spec.outcome.name]),
+    fit: spec.outcome.min + fit * spec.outcome.scale,
+    z,
+  }));
+  if (found.length) {
+    const out = new Set(found.map((o) => o.i));
+    const kept = (_, i) => !out.has(i);
+    [X, y, used] = [X.filter(kept), y.filter(kept), used.filter(kept)];
+  }
+
   const result = await trainLinear(X, y, {
     steps: config.steps,
     learningRate: config.learningRate,
@@ -57,12 +80,13 @@ async function trainSingle(rows, stats, config, { onProgress, shouldStop, rowInd
       optimizer: config.optimizer,
       rowsUsed: used.length,
       rowsDropped: dropped,
+      outlierCutoff: config.outlierCutoff > 0 ? config.outlierCutoff : null,
+      outliers,
       weights: X[0].length + 1, // incl. intercept; each enum value past the baseline is one weight
       trainedAt: Date.now(),
     },
   };
 
-  const coords = locationFields(config);
   if (coords) {
     const estimate = (row) => predict(model, row, { location: false }).value;
     const neighbours = config.neighbours ?? DEFAULT_NEIGHBOURS;
@@ -133,7 +157,8 @@ async function trainGrouped(rows, stats, config, { onProgress, shouldStop, rowIn
     model.droppedInputs = droppedInputs;
     model.group = value;
     groups[value] = model;
-    usedByGroup[value] = used;
+    const out = new Set(model.training.outliers.map((o) => o.row));
+    usedByGroup[value] = used.filter((r) => !out.has(rowIndex.get(r)));
     if (model.training.stopped) stopped = true;
   }
 
@@ -147,6 +172,7 @@ async function trainGrouped(rows, stats, config, { onProgress, shouldStop, rowIn
   grouped.metrics = evaluate(grouped, allUsed);
   const located = trained.filter((m) => m.location);
   if (located.length) grouped.locationMetrics = combineLocationMetrics(located.map((m) => m.location.metrics));
+  const outliers = trained.flatMap((m) => m.training.outliers.map((o) => ({ ...o, group: m.group })));
   grouped.training = {
     steps: Math.max(...trained.map((m) => m.training.steps)),
     requestedSteps: config.steps,
@@ -154,7 +180,9 @@ async function trainGrouped(rows, stats, config, { onProgress, shouldStop, rowIn
     learningRate: config.learningRate,
     optimizer: config.optimizer,
     rowsUsed: allUsed.length,
-    rowsDropped: rows.length - allUsed.length,
+    rowsDropped: rows.length - allUsed.length - outliers.length,
+    outlierCutoff: config.outlierCutoff > 0 ? config.outlierCutoff : null,
+    outliers,
     trainedAt: Date.now(),
   };
   return grouped;

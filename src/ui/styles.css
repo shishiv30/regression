@@ -311,3 +311,8 @@ table.results td:first-child { max-width: 110px; overflow: hidden; text-overflow
 /* Location adjustment */
 .location-fit { margin-top: 4px; }
 .data-table th.location .tag, .data-table td.loc-adj { color: var(--loc); }
+
+/* ---------- outliers left out of training ---------- */
+details.outliers { margin: 8px 0; font-size: 13px; }
+details.outliers summary { cursor: pointer; color: var(--warn); }
+details.outliers table { margin-top: 4px; }

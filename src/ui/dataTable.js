@@ -18,18 +18,17 @@ export function createDataTable(el) {
     const termOf = {};
     for (const [term, col] of Object.entries(mapping.inputs)) if (col) termOf[col] = term;
 
-    const est = [
+    const field = (c) => ({ key: `c:${c}`, label: c, column: c, value: (r) => batch.rows[r.index][c] });
+    const cols = [
       { key: 'est', label: `est_${outcomeName}`, value: (r) => r.estimate },
+      ...(mapping.actual ? [field(mapping.actual)] : []),
+      { key: '#', label: '#', value: (r) => r.index + 1 },
       ...(locationFields.length ? [{ key: 'loc', label: 'location adj', value: (r) => r.locationAdj }] : []),
       ...(mapping.actual ? [
         { key: 'gap', label: 'gap', value: (r) => r.gap },
         { key: 'gapPct', label: 'gap %', value: (r) => r.gapPct },
       ] : []),
-    ];
-    const cols = [
-      { key: '#', label: '#', value: (r) => r.index + 1 },
-      ...est,
-      ...batch.columns.map((c) => ({ key: `c:${c}`, label: c, column: c, value: (r) => batch.rows[r.index][c] })),
+      ...batch.columns.filter((c) => c !== mapping.actual).map(field),
     ];
 
     let rows = results;

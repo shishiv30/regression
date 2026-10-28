@@ -13,6 +13,7 @@ import {
   resultsToCsv,
   modelLocation,
   DEFAULT_NEIGHBOURS,
+  DEFAULT_OUTLIER_CUTOFF,
   storage,
 } from './calc/index.js';
 import { renderFields } from './ui/fields.js';
@@ -25,7 +26,7 @@ import { createGroupGraphs } from './ui/groupGraphs.js';
 import { esc } from './ui/format.js';
 
 const $ = (sel) => document.querySelector(sel);
-const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS };
+const DEFAULTS = { roles: {}, types: {}, groupBy: null, steps: 500, learningRate: 0.05, optimizer: 'adam', neighbours: DEFAULT_NEIGHBOURS, outlierCutoff: DEFAULT_OUTLIER_CUTOFF };
 
 const state = {
   dataset: null,
@@ -111,6 +112,7 @@ function renderAll() {
   $('#lr').value = config.learningRate;
   $('#optimizer').value = config.optimizer;
   $('#neighbours').value = config.neighbours;
+  $('#outliers').value = String(config.outlierCutoff);
   $('#neighbours-ctl').hidden = !Object.values(config.roles).includes('lat');
   renderTrainButton();
   renderModelViews();
@@ -237,6 +239,7 @@ async function onTrain() {
   config.learningRate = Number($('#lr').value) > 0 ? Number($('#lr').value) : DEFAULTS.learningRate;
   config.optimizer = $('#optimizer').value;
   config.neighbours = Math.max(1, Math.min(100, Math.round(Number($('#neighbours').value) || DEFAULTS.neighbours)));
+  config.outlierCutoff = Number($('#outliers').value) || 0;
   persistConfig();
 
   state.training = true;

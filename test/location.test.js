@@ -108,6 +108,16 @@ describe('location adjustment', () => {
     expect(p.location.adjustment).toBeGreaterThan(0);
   });
 
+  it('judges outliers against their neighbourhood, not the whole map', async () => {
+    const m = await trainModel(train.rows, stats, { ...base, steps: 300, outlierCutoff: 3.5, roles: suggestRoles(train.columns, stats) });
+    // Houses in the pricey and cheap spots are explained by their neighbours.
+    expect(m.training.outliers.length).toBeLessThan(train.rows.length * 0.02);
+    // A wrong price among normal neighbours still stands out.
+    const rows = train.rows.map((r, i) => (i === 5 ? { ...r, price: String(Number(r.price) * 10) } : r));
+    const poisoned = await trainModel(rows, analyzeColumns(train.columns, rows), { ...base, steps: 300, outlierCutoff: 3.5, roles: suggestRoles(train.columns, stats) });
+    expect(poisoned.training.outliers[0].row).toBe(5);
+  });
+
   it('trains without a location when no lat/lng is marked', async () => {
     const m = await trainModel(train.rows, stats, { ...base, steps: 200, roles: { sqft: 'input', beds: 'input', price: 'outcome' } });
     expect(m.location).toBeUndefined();
