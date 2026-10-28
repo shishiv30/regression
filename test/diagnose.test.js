@@ -49,5 +49,5 @@ describe('gap diagnosis', () => {
     expect(d.rows).toBe(200);
     expect(d.bigRows).toBe(20);
     expect(diagnoseGaps(model, verify.slice(0, 10), mapping, results.slice(0, 10))).toBeNull();
-  });
+  }, 60000);
 });

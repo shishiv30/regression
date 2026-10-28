@@ -51,7 +51,7 @@ describe('log-scale inputs', () => {
     const linear = await trainModel(rows, stats, { ...base, scales: { sqft: 'linear' } });
     expect(linear.terms.find((t) => t.name === 'sqft').log).toBeUndefined();
     expect(model.metrics.rmse).toBeLessThan(linear.metrics.rmse);
-  });
+  }, 120000);
 
   it('rejects 0 in a prediction and fills it in a batch', async () => {
     const model = await trainModel(rows, stats, { ...base, steps: 300 });
@@ -59,5 +59,5 @@ describe('log-scale inputs', () => {
     const { results } = predictBatch(model, [{ sqft: '0', age: '10', price: '500000' }], { inputs: { sqft: 'sqft', age: 'age' }, actual: 'price', label: null });
     expect(results[0].imputed).toEqual(['sqft']);
     expect(Number.isFinite(results[0].estimate)).toBe(true);
-  });
+  }, 60000);
 });

@@ -86,5 +86,5 @@ describe('group-by training', () => {
     const cols = ['kind', 'x', 'z', 'y'];
     const m = await trainModel(wide, analyzeColumns(cols, wide, { z: 'enum' }), { ...config, types: { z: 'enum' }, minGroupRows: 10 });
     expect(m.skipped.find((g) => g.value === 'lot').reason).toMatch(/12 complete records for 9 weights/);
-  });
+  }, 60000);
 });

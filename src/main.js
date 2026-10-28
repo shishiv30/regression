@@ -191,6 +191,7 @@ function renderBatchViews() {
   const diag = state.diagnosis?.output === output && state.diagnosis.group === group ? state.diagnosis.value : undefined;
   renderBatch($('#batch'), { batch, model, mapping: state.mapping, output: shown, scope, previous, diagnosis: diag }, {
     onDiagnose() {
+      if (state.training) return;
       setStatus('Diagnosing gaps…');
       // Let the status paint before the (up to ~1 s) work.
       setTimeout(() => {
@@ -269,9 +270,15 @@ function importBatchText(text, fileName) {
 
 function renderTrainButton() {
   const btn = $('#train-btn');
+  const stop = $('#stop-btn');
+  // Train is disabled for the whole calculation; Stop is its own button.
+  stop.hidden = !state.training;
+  stop.disabled = state.stopRequested;
+  stop.textContent = state.stopRequested ? 'Stopping…' : 'Stop';
   if (state.training) {
-    btn.textContent = 'Stop';
-    btn.disabled = false;
+    btn.textContent = 'Training…';
+    btn.disabled = true;
+    btn.title = 'Training is running';
     return;
   }
   btn.textContent = 'Train';
@@ -311,11 +318,14 @@ function onFieldChange(col, key, value) {
   renderAll();
 }
 
+function onStop() {
+  if (!state.training) return;
+  state.stopRequested = true;
+  renderTrainButton();
+}
+
 async function onTrain() {
-  if (state.training) {
-    state.stopRequested = true;
-    return;
-  }
+  if (state.training) return;
   const config = state.config;
   config.steps = Math.max(1, Math.min(100000, Math.round(Number($('#steps').value) || DEFAULTS.steps)));
   config.learningRate = Number($('#lr').value) > 0 ? Number($('#lr').value) : DEFAULTS.learningRate;
@@ -336,8 +346,12 @@ async function onTrain() {
   progress.hidden = false;
   progress.value = 0;
   setStatus('Training…');
+  // Let the disabled button paint before the first stretch of work.
+  await new Promise((r) => setTimeout(r, 0));
   try {
-    const model = await trainModel(state.dataset.rows, state.stats, config, {
+    // A snapshot: field changes made while training apply to the next run.
+    const trained = structuredClone(config);
+    const model = await trainModel(state.dataset.rows, state.stats, trained, {
       onProgress: ({ step, steps, loss, group, groupIndex, groupCount }) => {
         const done = group === undefined ? step / steps : (groupIndex + step / steps) / groupCount;
         progress.value = done;
@@ -346,13 +360,15 @@ async function onTrain() {
       },
       shouldStop: () => state.stopRequested,
     });
-    model.setupKey = setupKey(config);
+    model.setupKey = setupKey(trained);
     // Keep the old model's batch results to compare the new one with.
     if (state.batch && state.batchOutput) state.previousRun = { fileName: state.batch.fileName, results: state.batchOutput.results };
     state.model = model;
     const saved = storage.saveModel(model);
-    state.training = false;
+    // Batch estimates are recomputed here, still under the disabled button.
     renderAll();
+    state.training = false;
+    renderTrainButton();
     const groups = isGrouped(model) ? ` · ${Object.keys(model.groups).length} formulas${model.skipped.length ? `, ${model.skipped.length} group(s) skipped` : ''}` : '';
     setStatus(`Done — R² ${model.metrics.r2.toFixed(4)}${groups}${saved ? '' : ' (model could not be saved to localStorage)'}`, 'ok');
   } catch (e) {
@@ -447,6 +463,7 @@ $('#clear-btn').addEventListener('click', () => {
 });
 
 $('#train-btn').addEventListener('click', onTrain);
+$('#stop-btn').addEventListener('click', onStop);
 
 // Restore the previous session from localStorage.
 const savedConfig = storage.loadConfig();

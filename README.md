@@ -12,7 +12,8 @@ Client-side linear regression on your own CSV records. Nothing leaves the browse
 npm install
 npm run dev      # http://localhost:5173
 npm run build    # static site in dist/
-npm test         # calculation-layer tests
+npm test         # calculation-layer tests (full suite, ~35 s)
+npm run test:quick  # skips the large-dataset tests (sensor-large.csv, San Jose real data); used by the deploy pipeline
 npm run test-data  # regenerate public/test-data/
 ```
 

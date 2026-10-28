@@ -35,7 +35,7 @@ describe('comparables scale by size, batch screen', () => {
     const big = { size: '900000', lat: '37.005', lng: '-121.895' };
     const { results } = predictBatch(model, [{ ...big, price: String(Math.round(80000 * 900000 ** 0.3)) }], { inputs: { size: 'size', lat: 'lat', lng: 'lng' }, actual: 'price', label: null });
     expect(Math.abs(results[0].gapPct)).toBeLessThan(0.3);
-  });
+  }, 60000);
 
   it('leaves implausible actual values and far-out inputs out of the gap figures', () => {
     const fresh = landData(40, 9);

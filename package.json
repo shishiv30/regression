@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:quick": "SKIP_HEAVY=1 vitest run",
     "test-data": "node scripts/make-test-data.mjs"
   },
   "dependencies": {

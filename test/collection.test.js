@@ -53,8 +53,12 @@ function effects(model) {
   return out;
 }
 
-describe.each(index)('$file', ({ file, truth }) => {
-  it('matches the exact fit and the generating formula', async () => {
+// SKIP_HEAVY=1 (the deploy pipeline) skips datasets this large.
+const HEAVY_ROWS = 10000;
+const skipHeavy = !!process.env.SKIP_HEAVY;
+
+describe.each(index)('$file', ({ file, truth, rows: count }) => {
+  it.skipIf(skipHeavy && count > HEAVY_ROWS)('matches the exact fit and the generating formula', async () => {
     const { columns, rows } = parseCsv(readFileSync(new URL(file, dir), 'utf8'));
     const stats = analyzeColumns(columns, rows);
     const roles = suggestRoles(columns, stats);

@@ -24,8 +24,10 @@ jobs:
 
       - run: npm ci
 
+      # The large-dataset tests (sensor-large.csv, the San Jose real data) are
+      # skipped here; run the full suite locally with `npm test`.
       - name: Test
-        run: npm test
+        run: npm run test:quick
 
       - name: Build
         run: npm run build

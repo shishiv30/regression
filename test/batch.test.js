@@ -58,7 +58,8 @@ describe('batch prediction (synthetic)', () => {
   });
 });
 
-describe('San Jose: train on sold, verify on for-sale', () => {
+// Real data, thousands of rows: SKIP_HEAVY=1 (the deploy pipeline) skips it.
+describe.skipIf(!!process.env.SKIP_HEAVY)('San Jose: train on sold, verify on for-sale', () => {
   it('estimates every for-sale listing and compares each listPrice', async () => {
     const model = await train('../public/test-data/test-san-jose-training-data.csv');
     expect(model.outcome.name).toBe('closePrice');

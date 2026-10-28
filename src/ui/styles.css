@@ -66,7 +66,7 @@ body {
   overflow: hidden;
 }
 body:has(#predict-section:not([hidden])) {
-  grid-template-columns: 360px minmax(0, 1fr) 340px;
+  grid-template-columns: 420px minmax(0, 1fr) 420px;
   grid-template-areas: 'top top top' 'left main right';
 }
 
