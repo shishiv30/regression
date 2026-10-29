@@ -34,8 +34,8 @@ export function renderFields(el, { dataset, stats, config }, onChange) {
         <div class="field-name" title="${esc(col)}">${esc(col)}</div>
         <div class="field-controls">
           <select data-k="kind" aria-label="Use of ${esc(col)}" ${grouped ? 'disabled title="Grouped: one formula per value instead of an input"' : ''}>
-            <option value="number" ${num}>Number (x)</option>
-            <option value="enum">Enum (x)</option>
+            <option value="number" ${num}>Metric (x)</option>
+            <option value="enum">Dimension (x)</option>
             <option value="outcome" ${num}>Outcome (y)</option>
             <option value="lat" ${num}>Latitude</option>
             <option value="lng" ${num}>Longitude</option>

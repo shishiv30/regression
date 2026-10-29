@@ -2,7 +2,7 @@
 
 **Live demo:** https://shishiv30.github.io/regression/
 
-To try it on the published page, pick **San Jose sold listings (training)** from **Load test dataset…**, set `zipCode` to **Enum (x)**, and press **Train** (`closePrice` is the outcome). Then pick **San Jose for-sale listings (verify)** under **Predict many records** to see the gap chart. The source files are [`public/test-data/test-san-jose-training-data.csv`](public/test-data/test-san-jose-training-data.csv) (4,711 sold listings, each with a `closePrice`) and [`public/test-data/test-san-jose-verify-data.csv`](public/test-data/test-san-jose-verify-data.csv) (1,655 for-sale listings, 1,647 with a `listPrice`). Both have `lat`/`lng`, so the location adjustment, comparables and the gap map are on. Edit them in place, then run `npm run test-data` to refresh the row counts.
+To try it on the published page, pick **San Jose sold listings (training)** from **Load test dataset…**, set `zipCode` to **Dimension (x)**, and press **Train** (`closePrice` is the outcome). Then pick **San Jose for-sale listings (verify)** under **Predict many records** to see the gap chart. The source files are [`public/test-data/test-san-jose-training-data.csv`](public/test-data/test-san-jose-training-data.csv) (4,711 sold listings, each with a `closePrice`) and [`public/test-data/test-san-jose-verify-data.csv`](public/test-data/test-san-jose-verify-data.csv) (1,655 for-sale listings, 1,647 with a `listPrice`). Both have `lat`/`lng`, so the location adjustment, comparables and the gap map are on. Edit them in place, then run `npm run test-data` to refresh the row counts.
 
 Every push to `main` runs the tests, builds the site and publishes it to the `gh-pages` branch (`.github/workflows/deploy.yml`).
 
@@ -36,7 +36,7 @@ BASE_PATH=/regression/ npm run build && BASE_PATH=/regression/ npm run preview
   - `batch.js` estimates every row of a second CSV and measures the gap to its actual value
   - `storage.js` saves the dataset, field setup, model and batch file in localStorage
 - `src/ui/`: the presentation layer
-  - top bar: CSV import, field cards (one dropdown each: Number (x), Enum (x), Outcome (y), Latitude, Longitude, Label or Ignore), training controls (`fields.js`)
+  - top bar: CSV import, field cards (one dropdown each: Metric (x), Dimension (x), Outcome (y), Latitude, Longitude, Label or Ignore), training controls (`fields.js`)
   - left panel: training report, loss curve, weights (`report.js`)
   - main area, three tabs: **Weights** (`graph.js`, each input points to the outcome), **Gap chart** (`gapChart.js`) and **Data table** (`dataTable.js`, every predicted record with `est_<outcome>` and the actual value in the first two columns, then the rest of the fields, gap and gap %; click a header to sort)
   - right panel: predict one record (`report.js`) and predict many records from a CSV (`batch.js`)
@@ -47,8 +47,8 @@ Each field card has one dropdown that sets both what the field is for and how it
 
 | Choice | Trained on | Meaning |
 | --- | --- | --- |
-| **Number (x)** | yes | numeric input, one weight |
-| **Enum (x)** | yes | categorical input, one weight per value (e.g. `zipCode`) |
+| **Metric (x)** | yes | numeric input, one weight |
+| **Dimension (x)** | yes | categorical input, one weight per value (e.g. `zipCode`) |
 | **Outcome (y)** | — | the value to estimate (numeric) |
 | **Latitude** / **Longitude** | location adjustment | coordinates for the location adjustment, comparables and the gap map |
 | **Label** | no | names a record: shown in the gap chart tooltip when the batch file has the same column |
@@ -177,7 +177,7 @@ Try it with **Neighbourhood prices (lat/lng, training)**, then **Neighbourhood p
    - **Compare with** (e.g. `listPrice`), shown at the top of the section, is the column each estimate is compared with. It defaults to the outcome's column, else the unused numeric column with at least half its values inside the training outcome range whose middle and spread look most like the outcome (so a ZIP code, which sits inside a price range but barely varies, is not taken for a price). The suggestion is used until you pick a column yourself; your pick is kept.
    - **Row label** (e.g. `mlsNumber`) names each row in the chart and table. It defaults to a field marked **Label** in training, else a text column with a different value on nearly every row.
 4. The **Gap chart** tab draws every record as a node. Blue means the actual value is above the estimate, orange-red means below, and a bigger node means a bigger |gap %| (capped at 50%). A hollow ring has no actual value. It has three layouts:
-   - **Map** (when the batch file has latitude/longitude): each record sits at its coordinates. Records with the same **Link by** value (defaults to the enum input with the most values that still average 2+ training records each, e.g. `zipCode` set to Enum, else none) are linked to a ◆ hub at their centre. Hover a hub for that group's median gap.
+   - **Map** (when the batch file has latitude/longitude): each record sits at its coordinates. Records with the same **Link by** value (defaults to the enum input with the most values that still average 2+ training records each, e.g. `zipCode` set to Dimension, else none) are linked to a ◆ hub at their centre. Hover a hub for that group's median gap.
    - **Estimate vs actual**: actual across, estimate up, log scale when values span 10× or more. On the dashed diagonal the estimate is exact; each node's stem is its gap. This is the default without coordinates.
    - **List**: one row per record, sorted by gap %.
 
@@ -228,7 +228,7 @@ Removing `photoCount` improves the results; removing `parkingGarageSpace` makes 
 
 ## San Jose: sold → for-sale, round by round
 
-Setup: group by `listingType.name`; `soldXdaysago`, `onMarketDate` and `mlsNumber` ignored; address as label; `zipCode` as enum; `closePrice` as outcome. Verified on the for-sale file against `listPrice`. Each round fixed only the cause found in the previous one:
+Setup: group by `listingType.name`; `soldXdaysago`, `onMarketDate` and `mlsNumber` ignored; address as label; `zipCode` as dimension; `closePrice` as outcome. Verified on the for-sale file against `listPrice`. Each round fixed only the cause found in the previous one:
 
 | Round | Change | Rows | Median gap | ±10% | Mean gap |
 |---|---|---|---|---|---|
