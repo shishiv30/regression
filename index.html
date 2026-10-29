@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Linear Regression Lab</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M2 13L14 3' stroke='%234f5bd5' stroke-width='2'/><circle cx='4' cy='9' r='1.5' fill='%231f9d6b'/><circle cx='11' cy='8' r='1.5' fill='%231f9d6b'/></svg>" />
+    <script type="module" crossorigin src="/regression/assets/index-C8Go8e0s.js"></script>
+    <link rel="stylesheet" crossorigin href="/regression/assets/index-CM1Se6PK.css">
+  </head>
+  <body>
+    <header class="top">
+      <div class="top-row">
+        <h1 class="brand">Linear Regression Lab</h1>
+        <label class="btn primary">
+          Import CSV
+          <input id="file-input" type="file" accept=".csv,text/csv" hidden />
+        </label>
+        <select id="sample-select" aria-label="Load a test dataset">
+          <option value="">Load test dataset…</option>
+          <option value="sample-housing.csv">Housing (synthetic sample)</option>
+        </select>
+        <span id="file-info" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="clear-btn" class="btn ghost" type="button">Clear saved data</button>
+      </div>
+
+      <div id="fields" class="fields"></div>
+
+      <div class="top-row train-row">
+        <label class="ctl">Steps <input id="steps" type="number" min="1" max="100000" step="1" /></label>
+        <label class="ctl">Learning rate <input id="lr" type="number" min="0.0001" max="10" step="any" /></label>
+        <label class="ctl">
+          Optimizer
+          <select id="optimizer">
+            <option value="adam">Adam</option>
+            <option value="sgd">SGD</option>
+          </select>
+        </label>
+        <label class="ctl" title="Ridge regression: a penalty on large weights, so a formula with few records per weight (a small group, an enum with many values) stops memorising its records. Auto picks the strength per formula by 5-fold cross-validation; it stays near 0 when the data supports every weight.">
+          Regularisation
+          <select id="ridge">
+            <option value="auto">Auto</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label class="ctl" title="Log scale: the formula estimates log(outcome), so each weight is a percentage change. Suits prices and other values that grow by percentages. Auto uses it for an outcome that is always above 0 and spans at least 10×. Each number input has its own Scale on its card.">
+          Outcome scale
+          <select id="log-outcome">
+            <option value="auto">Auto</option>
+            <option value="linear">Linear</option>
+            <option value="log">Log</option>
+          </select>
+        </label>
+        <label class="ctl" title="Leave out records the formula misses far more than the rest (in robust standard deviations of the error), so bad data can't drag the weights">
+          Outliers
+          <select id="outliers">
+            <option value="0">Keep all</option>
+            <option value="3">Drop &gt; 3σ</option>
+            <option value="3.5">Drop &gt; 3.5σ</option>
+            <option value="5">Drop &gt; 5σ</option>
+            <option value="8">Drop &gt; 8σ</option>
+          </select>
+        </label>
+        <label class="ctl" title="A record with a blank input: drop it from training, or fill the blank with the field's median (numbers) or most common value (enums). Records without an outcome are always dropped.">
+          Missing values
+          <select id="missing">
+            <option value="drop">Drop record</option>
+            <option value="median">Fill with median</option>
+          </select>
+        </label>
+        <label class="ctl" id="min-group-ctl" title="A group with fewer complete records than this (or fewer than 2 per weight) gets no formula: too little data to estimate its records better than a guess. Its records get no estimate." hidden>Min records / group <input id="min-group" type="number" min="2" max="100000" step="1" /></label>
+        <label class="ctl" id="neighbours-ctl" title="How many nearby training records set each estimate's location adjustment" hidden>Neighbours <input id="neighbours" type="number" min="1" max="100" step="1" /></label>
+        <label class="ctl" id="comps-ctl" title="Comparables: the nearest training records of similar size, priced by their value per size unit (e.g. price per sqft). Blended with the formula, they also rate each estimate's confidence. Auto picks the number input that tracks the outcome best." hidden>
+          Comparables by
+          <select id="comps"></select>
+        </label>
+        <button id="train-btn" class="btn primary" type="button">Train</button>
+        <button id="stop-btn" class="btn" type="button" hidden title="Stop after the current step; the model keeps what it has learned so far">Stop</button>
+        <progress id="progress" max="1" value="0" hidden></progress>
+        <span id="status" class="status" role="status"></span>
+      </div>
+    </header>
+
+    <aside class="left" id="left">
+      <h2>Outcome</h2>
+      <div id="report"></div>
+    </aside>
+
+    <main class="main">
+      <div class="view-tabs" role="tablist" aria-label="Main view">
+        <button type="button" role="tab" data-view="weights" aria-selected="true">Weights</button>
+        <button type="button" role="tab" data-view="gap" aria-selected="false">Gap chart</button>
+        <button type="button" role="tab" data-view="table" aria-selected="false">Data table</button>
+      </div>
+      <div class="view" id="view-weights">
+        <canvas id="graph" aria-label="Weight graph: each input field points to the outcome"></canvas>
+        <div id="group-graphs" class="group-graphs" hidden></div>
+      </div>
+      <div class="view gap-view" id="view-gap" hidden>
+        <div class="gap-bar" id="gap-bar" hidden>
+          <div class="seg" role="radiogroup" aria-label="Gap chart layout">
+            <button type="button" data-layout="map" title="Each record at its latitude/longitude">Map</button>
+            <button type="button" data-layout="scatter" title="Actual (across) against estimate (up); on the diagonal the estimate is exact">Estimate vs actual</button>
+            <button type="button" data-layout="list" title="One row per record, sorted by gap">List</button>
+          </div>
+          <label class="ctl" title="Records with the same value are linked, and hovering one highlights the rest">Link by <select id="gap-link"></select></label>
+          <span class="muted small" id="gap-hint"></span>
+        </div>
+        <div class="gap-scroll" id="gap-scroll">
+          <canvas id="gap" aria-label="Gap between estimated and actual value for each record"></canvas>
+        </div>
+      </div>
+      <div class="view table-scroll" id="view-table" hidden></div>
+      <div id="tooltip" class="tooltip" hidden></div>
+    </main>
+
+    <aside class="right" id="predict-section" hidden>
+      <h2>Predict a new record</h2>
+      <form id="predict-form" class="predict-form"></form>
+      <div id="prediction"></div>
+
+      <section class="batch">
+        <h2>Predict many records</h2>
+        <p class="muted small">Import a CSV of records (e.g. sold listings) to estimate every row and compare it with its real value.</p>
+        <div class="top-row">
+          <label class="btn">
+            Import CSV
+            <input id="batch-file" type="file" accept=".csv,text/csv" hidden />
+          </label>
+          <select id="batch-sample" aria-label="Load a test file for batch prediction">
+            <option value="">Test file…</option>
+          </select>
+        </div>
+        <div id="batch"></div>
+      </section>
+    </aside>
+
+  </body>
+</html>

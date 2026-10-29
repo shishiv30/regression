@@ -1,0 +1,218 @@
+[
+  {
+    "file": "salary.csv",
+    "title": "Salary (enums + missing values)",
+    "description": "500 employees. 3 enum inputs, a free-text name column, age collinear with experience, \"85,000\"-style outcome, ~3% missing cells.",
+    "rows": 500,
+    "truth": {
+      "outcome": "salary",
+      "intercept": 40000,
+      "weights": {
+        "years_experience": 2500,
+        "age": 0
+      },
+      "enums": {
+        "education": {
+          "High School": 0,
+          "Bachelor": 15000,
+          "Master": 25000,
+          "PhD": 35000
+        },
+        "department": {
+          "Engineering": 20000,
+          "Sales": 5000,
+          "Marketing": 0,
+          "Support": -8000,
+          "HR": -5000
+        },
+        "remote": {
+          "no": 0,
+          "yes": -3000
+        }
+      }
+    }
+  },
+  {
+    "file": "fuel-efficiency.csv",
+    "title": "Fuel efficiency (8 inputs)",
+    "description": "400 cars, 8 inputs (5 numeric, 3 enum), strongly correlated engine specs. Checks how the graph handles many nodes.",
+    "rows": 400,
+    "truth": {
+      "outcome": "mpg",
+      "weights": {
+        "weight_lbs": -0.004,
+        "horsepower": -0.03,
+        "cylinders": 0,
+        "displacement": 0,
+        "acceleration": 0.2,
+        "model_year": 0.35
+      },
+      "enums": {
+        "origin": {
+          "USA": 0,
+          "Europe": 1.5,
+          "Japan": 3
+        },
+        "transmission": {
+          "automatic": 0,
+          "manual": 1.2
+        },
+        "drive": {
+          "FWD": 0,
+          "RWD": -1,
+          "AWD": -1.8
+        }
+      }
+    }
+  },
+  {
+    "file": "ad-spend.csv",
+    "title": "Ad spend (tiny, one useless input)",
+    "description": "30 rows only. newspaper has a true weight of 0, so its edge should come out thin.",
+    "rows": 30,
+    "truth": {
+      "outcome": "sales",
+      "intercept": 3,
+      "weights": {
+        "tv": 0.045,
+        "radio": 0.19,
+        "newspaper": 0
+      }
+    }
+  },
+  {
+    "file": "messy.csv",
+    "title": "Messy formatting",
+    "description": "CRLF line endings, padded spaces, quoted \"City, ST\" values, \"N/A\" in a numeric-looking column, a constant column, an empty column, blank lines and missing outcomes.",
+    "rows": 121,
+    "truth": {
+      "outcome": "monthly_rent",
+      "intercept": 800,
+      "weights": {
+        "rooms": 450,
+        "distance_km": -20
+      },
+      "enums": {
+        "pets_allowed": {
+          "FALSE": 0,
+          "TRUE": 75
+        },
+        "city": {
+          "Denver, CO": 0,
+          "Austin, TX": 150,
+          "Portland, OR": 300
+        }
+      }
+    }
+  },
+  {
+    "file": "company-value.csv",
+    "title": "Extreme scales",
+    "description": "Interest rate ~0.005, employees ~10k, assets ~1M, outcome ~1e9. Checks normalisation and number formatting.",
+    "rows": 300,
+    "truth": {
+      "outcome": "valuation_usd",
+      "intercept": 100000000,
+      "weights": {
+        "interest_rate": -40000000000,
+        "employees": 30000,
+        "assets_usd": 150
+      },
+      "enums": {
+        "sector": {
+          "Retail": 0,
+          "Tech": 200000000,
+          "Energy": 500000000,
+          "Health": 100000000
+        }
+      }
+    }
+  },
+  {
+    "file": "sensor-large.csv",
+    "title": "Large (120k rows)",
+    "description": "120,000 sensor readings with a 12-value enum. Bigger than the localStorage quota; checks the warning and training speed.",
+    "rows": 120000,
+    "truth": {
+      "outcome": "power_load_kw",
+      "weights": {
+        "temperature_c": 1.8,
+        "humidity_pct": -0.25,
+        "wind_kmh": 0.6,
+        "pressure_hpa": 0.05,
+        "hour": 0.4
+      },
+      "enums": {
+        "site": {
+          "site-A": -4.800000000000001,
+          "site-B": -4,
+          "site-C": -3.2,
+          "site-D": -2.4000000000000004,
+          "site-E": -1.6,
+          "site-F": -0.8,
+          "site-G": 0,
+          "site-H": 0.8,
+          "site-I": 1.6,
+          "site-J": 2.4000000000000004,
+          "site-K": 3.2,
+          "site-L": 4
+        }
+      }
+    }
+  },
+  {
+    "file": "location-train.csv",
+    "title": "Neighbourhood prices (lat/lng, training)",
+    "description": "800 houses. Price = formula of sqft and beds + a neighbourhood effect (two pricey spots, one cheap). latitude/longitude are picked up as the location automatically.",
+    "rows": 800,
+    "truth": {
+      "outcome": "price",
+      "intercept": 120000,
+      "weights": {
+        "sqft": 210,
+        "beds": 15000
+      },
+      "location": [
+        {
+          "lat": 30.29,
+          "lng": -97.75,
+          "km": 1.5,
+          "amount": 150000
+        },
+        {
+          "lat": 30.22,
+          "lng": -97.7,
+          "km": 2,
+          "amount": 90000
+        },
+        {
+          "lat": 30.25,
+          "lng": -97.8,
+          "km": 1.8,
+          "amount": -80000
+        }
+      ]
+    }
+  },
+  {
+    "file": "location-verify.csv",
+    "title": "Neighbourhood prices (lat/lng, verify)",
+    "description": "150 sold houses from the same area to check the location adjustment; 10 have no coordinates.",
+    "rows": 150,
+    "truth": null
+  },
+  {
+    "file": "test-san-jose-training-data.csv",
+    "title": "San Jose sold listings (training)",
+    "description": "Real sold listings with coordinates. Train with closePrice as the outcome.",
+    "rows": 4711,
+    "truth": null
+  },
+  {
+    "file": "test-san-jose-verify-data.csv",
+    "title": "San Jose for-sale listings (verify)",
+    "description": "Real for-sale listings. Use under \"Predict many records\" with listPrice as the actual value.",
+    "rows": 1655,
+    "truth": null
+  }
+]
